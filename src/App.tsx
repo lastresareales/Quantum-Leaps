@@ -18,7 +18,8 @@ import {
   serverTimestamp,
   updateDoc,
   doc,
-  deleteDoc
+  deleteDoc,
+  increment
 } from 'firebase/firestore';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -72,6 +73,15 @@ interface Goal {
   createdAt: any;
   currentPhase?: number;
   quizPassedForPhase?: number;
+  deadline?: string;
+  weeklyMinutes?: number;
+  pace?: 'steady' | 'aggressive' | 'maintenance';
+  skillLevel?: 'beginner' | 'intermediate' | 'advanced';
+  motivation?: string;
+  constraints?: string;
+  preferredWindow?: string;
+  energyWindow?: string;
+  learningStyle?: string;
 }
 
 interface MicroStep {
@@ -83,6 +93,13 @@ interface MicroStep {
   difficulty: number;
   status: 'pending' | 'in-progress' | 'completed' | 'skipped';
   orderIndex: number;
+  completedAt?: any;
+  evidenceNotes?: string;
+  evidenceUrl?: string;
+  confidence?: number;
+  feedback?: 'too-hard' | 'too-easy' | 'irrelevant' | 'on-track';
+  attemptCount?: number;
+  completionProof?: string;
 }
 
 interface ChatMessage {
@@ -91,6 +108,91 @@ interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
   timestamp: any;
+}
+
+const paceLabels: Record<string, string> = {
+  steady: 'Steady',
+  aggressive: 'Aggressive',
+  maintenance: 'Maintenance'
+};
+
+function formatMinutes(totalMinutes: number) {
+  if (!Number.isFinite(totalMinutes) || totalMinutes <= 0) return '0m';
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
+}
+
+function coerceDate(value: any): Date | null {
+  if (!value) return null;
+  if (typeof value.toDate === 'function') return value.toDate();
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function daysUntil(dateString?: string) {
+  if (!dateString) return null;
+  const target = new Date(`${dateString}T23:59:59`);
+  if (Number.isNaN(target.getTime())) return null;
+  return Math.ceil((target.getTime() - Date.now()) / 86_400_000);
+}
+
+function buildScheduleSlots(goal: Goal, steps: MicroStep[]) {
+  const pendingSteps = steps.filter(step => step.status !== 'completed');
+  const nextStep = pendingSteps[0];
+  const windowLabel = goal.preferredWindow || goal.energyWindow || '12:45';
+  const weeklyBudget = goal.weeklyMinutes || 150;
+  const stepLength = nextStep?.durationMinutes || 20;
+  const sessions = Math.max(1, Math.floor(weeklyBudget / stepLength));
+
+  return [
+    { label: windowLabel, detail: nextStep ? nextStep.title : 'Review progress', active: true },
+    { label: 'Weekly load', detail: `${sessions} focused sessions`, active: false },
+    { label: 'Recovery slot', detail: goal.pace === 'aggressive' ? 'Add buffer' : 'Optional review', active: false },
+    { label: 'Energy mode', detail: goal.energyWindow || 'Not calibrated', active: false }
+  ];
+}
+
+function buildStepChecklist(step: MicroStep) {
+  return [
+    `Define the smallest useful output for "${step.title}".`,
+    `Work for ${step.durationMinutes || 20} minutes without expanding scope.`,
+    'Capture proof before marking the step complete.'
+  ];
+}
+
+function buildSuccessCriteria(step: MicroStep) {
+  return [
+    'There is a visible artifact, note, code output, link, or decision.',
+    `The artifact directly supports: ${step.description}`,
+    'You can explain the result in one sentence.'
+  ];
+}
+
+function buildAdaptiveSignals(goal: Goal, steps: MicroStep[]) {
+  const completed = steps.filter(step => step.status === 'completed');
+  const skipped = steps.filter(step => step.status === 'skipped');
+  const confidenceAverage = completed.length
+    ? Math.round(completed.reduce((sum, step) => sum + (step.confidence || 3), 0) / completed.length)
+    : 0;
+  const hardFeedbackCount = steps.filter(step => step.feedback === 'too-hard').length;
+  const deadlineDays = daysUntil(goal.deadline);
+
+  const signals = [];
+  if (hardFeedbackCount >= 2 || confidenceAverage === 1) {
+    signals.push('Reduce next phase difficulty and add more practice reps.');
+  }
+  if (skipped.length > 0) {
+    signals.push('Rebuild skipped work into smaller recovery steps.');
+  }
+  if (deadlineDays !== null && deadlineDays < 14 && (goal.weeklyMinutes || 0) < 180) {
+    signals.push('Deadline pressure is high; increase weekly capacity or narrow scope.');
+  }
+  if (completed.length >= 8 && hardFeedbackCount === 0 && confidenceAverage >= 4) {
+    signals.push('User is ready for denser, more ambitious next-phase work.');
+  }
+
+  return signals.length ? signals : ['Current plan is stable. Keep the next phase at this difficulty.'];
 }
 
 // --- Components ---
@@ -259,6 +361,13 @@ function Dashboard() {
   const [selectedGoalId, setSelectedGoalId] = useState<string | null>(null);
   const [isCreating, setIsCreating] = useState(false);
   const [newGoalTitle, setNewGoalTitle] = useState('');
+  const [newGoalDeadline, setNewGoalDeadline] = useState('');
+  const [newGoalWeeklyMinutes, setNewGoalWeeklyMinutes] = useState(150);
+  const [newGoalSkillLevel, setNewGoalSkillLevel] = useState<Goal['skillLevel']>('beginner');
+  const [newGoalPace, setNewGoalPace] = useState<Goal['pace']>('steady');
+  const [newGoalPreferredWindow, setNewGoalPreferredWindow] = useState('12:45');
+  const [newGoalMotivation, setNewGoalMotivation] = useState('');
+  const [newGoalConstraints, setNewGoalConstraints] = useState('');
 
   useEffect(() => {
     if (!user) return;
@@ -276,12 +385,27 @@ function Dashboard() {
       const docRef = await addDoc(collection(db, 'goals'), {
         userId: user.uid,
         title: newGoalTitle,
+        deadline: newGoalDeadline || null,
+        weeklyMinutes: newGoalWeeklyMinutes,
+        skillLevel: newGoalSkillLevel,
+        pace: newGoalPace,
+        preferredWindow: newGoalPreferredWindow,
+        energyWindow: newGoalPreferredWindow,
+        motivation: newGoalMotivation,
+        constraints: newGoalConstraints,
         status: 'analyzing',
         createdAt: serverTimestamp(),
         currentPhase: 1,
         quizPassedForPhase: 0
       });
       setNewGoalTitle('');
+      setNewGoalDeadline('');
+      setNewGoalWeeklyMinutes(150);
+      setNewGoalSkillLevel('beginner');
+      setNewGoalPace('steady');
+      setNewGoalPreferredWindow('12:45');
+      setNewGoalMotivation('');
+      setNewGoalConstraints('');
       setIsCreating(false);
       setSelectedGoalId(docRef.id);
     } catch (err) {
@@ -290,6 +414,13 @@ function Dashboard() {
   };
 
   const selectedGoal = goals.find(g => g.id === selectedGoalId);
+  const activeGoalCount = goals.filter(goal => goal.status === 'active' || goal.status === 'analyzing').length;
+  const completedGoalCount = goals.filter(goal => goal.status === 'completed').length;
+  const dueSoonCount = goals.filter(goal => {
+    const remaining = daysUntil(goal.deadline);
+    return remaining !== null && remaining >= 0 && remaining <= 14;
+  }).length;
+  const totalWeeklyCapacity = goals.reduce((sum, goal) => sum + (goal.weeklyMinutes || 0), 0);
 
   return (
     <div className="app-container-grid bg-bg-darkest overflow-hidden">
@@ -368,17 +499,27 @@ function Dashboard() {
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div className="card">
                   <span className="card-label">Active Initiatives</span>
-                  <div className="text-4xl font-light text-text-primary mb-2 tracking-tight">{goals.length}</div>
+                  <div className="text-4xl font-light text-text-primary mb-2 tracking-tight">{activeGoalCount}</div>
                   <div className="progress-bar w-full bg-white/5 h-[1px]">
-                     <div className="bg-accent-blue h-full w-[60%] shadow-[0_0_5px_var(--color-accent-blue)]" />
+                     <div className="bg-accent-blue h-full shadow-[0_0_5px_var(--color-accent-blue)]" style={{ width: `${Math.min(100, activeGoalCount * 20)}%` }} />
                   </div>
                 </div>
                 <div className="card">
-                  <span className="card-label">Micro-Allocations Logged</span>
-                  <div className="text-4xl font-light text-text-primary mb-2 tracking-tight">1,204</div>
+                  <span className="card-label">Weekly Capacity</span>
+                  <div className="text-4xl font-light text-text-primary mb-2 tracking-tight">{formatMinutes(totalWeeklyCapacity)}</div>
                   <div className="progress-bar w-full bg-white/5 h-[1px]">
-                     <div className="bg-accent-blue h-full w-[42%] shadow-[0_0_5px_var(--color-accent-blue)]" />
+                     <div className="bg-accent-blue h-full shadow-[0_0_5px_var(--color-accent-blue)]" style={{ width: `${Math.min(100, (totalWeeklyCapacity / 600) * 100)}%` }} />
                   </div>
+                </div>
+                <div className="card">
+                  <span className="card-label">Deadline Pressure</span>
+                  <div className="text-4xl font-light text-text-primary mb-2 tracking-tight">{dueSoonCount}</div>
+                  <p className="text-[11px] text-text-secondary">Goals due in the next 14 days.</p>
+                </div>
+                <div className="card">
+                  <span className="card-label">Closed Loops</span>
+                  <div className="text-4xl font-light text-text-primary mb-2 tracking-tight">{completedGoalCount}</div>
+                  <p className="text-[11px] text-text-secondary">Completed strategic initiatives.</p>
                 </div>
               </div>
 
@@ -433,15 +574,88 @@ function Dashboard() {
               <Plus className="w-5 h-5 text-accent-blue" />
               <span>New Strategic Initiative</span>
             </h3>
-            <form onSubmit={handleCreateGoal}>
+            <form onSubmit={handleCreateGoal} className="space-y-5">
               <input 
                 autoFocus
                 value={newGoalTitle}
                 onChange={(e) => setNewGoalTitle(e.target.value)}
                 placeholder="Ex. Financial Sovereignty"
-                className="w-full bg-transparent border-b border-border-color py-4 text-white placeholder:text-text-secondary/50 mb-10 focus:outline-none focus:border-accent-blue transition-colors text-lg"
+                className="w-full bg-transparent border-b border-border-color py-4 text-white placeholder:text-text-secondary/50 focus:outline-none focus:border-accent-blue transition-colors text-lg"
               />
-              <div className="flex justify-end space-x-6 items-center">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <label className="space-y-2">
+                  <span className="card-label mb-0">Target Date</span>
+                  <input
+                    type="date"
+                    value={newGoalDeadline}
+                    onChange={(e) => setNewGoalDeadline(e.target.value)}
+                    className="w-full bg-white/5 border border-border-color rounded p-3 text-sm text-text-primary focus:outline-none focus:border-accent-blue"
+                  />
+                </label>
+                <label className="space-y-2">
+                  <span className="card-label mb-0">Weekly Capacity</span>
+                  <input
+                    type="number"
+                    min={30}
+                    step={15}
+                    value={newGoalWeeklyMinutes}
+                    onChange={(e) => setNewGoalWeeklyMinutes(Number(e.target.value))}
+                    className="w-full bg-white/5 border border-border-color rounded p-3 text-sm text-text-primary focus:outline-none focus:border-accent-blue"
+                  />
+                </label>
+                <label className="space-y-2">
+                  <span className="card-label mb-0">Skill Level</span>
+                  <select
+                    value={newGoalSkillLevel}
+                    onChange={(e) => setNewGoalSkillLevel(e.target.value as Goal['skillLevel'])}
+                    className="w-full bg-bg-card border border-border-color rounded p-3 text-sm text-text-primary focus:outline-none focus:border-accent-blue"
+                  >
+                    <option value="beginner">Beginner</option>
+                    <option value="intermediate">Intermediate</option>
+                    <option value="advanced">Advanced</option>
+                  </select>
+                </label>
+                <label className="space-y-2">
+                  <span className="card-label mb-0">Pace</span>
+                  <select
+                    value={newGoalPace}
+                    onChange={(e) => setNewGoalPace(e.target.value as Goal['pace'])}
+                    className="w-full bg-bg-card border border-border-color rounded p-3 text-sm text-text-primary focus:outline-none focus:border-accent-blue"
+                  >
+                    <option value="steady">Steady</option>
+                    <option value="aggressive">Aggressive</option>
+                    <option value="maintenance">Maintenance</option>
+                  </select>
+                </label>
+              </div>
+              <label className="space-y-2 block">
+                <span className="card-label mb-0">Preferred Work Window</span>
+                <input
+                  value={newGoalPreferredWindow}
+                  onChange={(e) => setNewGoalPreferredWindow(e.target.value)}
+                  placeholder="Ex. 07:30, lunch, evenings"
+                  className="w-full bg-white/5 border border-border-color rounded p-3 text-sm text-text-primary focus:outline-none focus:border-accent-blue"
+                />
+              </label>
+              <label className="space-y-2 block">
+                <span className="card-label mb-0">Motivation</span>
+                <textarea
+                  value={newGoalMotivation}
+                  onChange={(e) => setNewGoalMotivation(e.target.value)}
+                  placeholder="Why this matters now"
+                  className="w-full bg-white/5 border border-border-color rounded p-3 text-sm text-text-primary focus:outline-none focus:border-accent-blue min-h-20 resize-none"
+                />
+              </label>
+              <label className="space-y-2 block">
+                <span className="card-label mb-0">Constraints</span>
+                <textarea
+                  value={newGoalConstraints}
+                  onChange={(e) => setNewGoalConstraints(e.target.value)}
+                  placeholder="Tools, budget, schedule, environment, blockers"
+                  className="w-full bg-white/5 border border-border-color rounded p-3 text-sm text-text-primary focus:outline-none focus:border-accent-blue min-h-20 resize-none"
+                />
+              </label>
+              <div className="flex justify-end space-x-6 items-center pt-3">
                 <button type="button" onClick={() => setIsCreating(false)} className="btn-ghost">Close</button>
                 <button type="submit" className="btn-primary">Initialize</button>
               </div>
@@ -462,6 +676,10 @@ function GoalDetailsLayout({ goal, onClose }: { goal: Goal, onClose: () => void 
   const [isGenerating, setIsGenerating] = useState(false);
   const [selectedStep, setSelectedStep] = useState<MicroStep | null>(null);
   const [terminalStep, setTerminalStep] = useState<MicroStep | null>(null);
+  const [evidenceNotes, setEvidenceNotes] = useState('');
+  const [evidenceUrl, setEvidenceUrl] = useState('');
+  const [confidence, setConfidence] = useState(3);
+  const [stepFeedback, setStepFeedback] = useState<MicroStep['feedback']>('on-track');
 
   // Quiz/Exam States
   const [examQuestions, setExamQuestions] = useState<any[] | null>(null);
@@ -503,6 +721,14 @@ function GoalDetailsLayout({ goal, onClose }: { goal: Goal, onClose: () => void 
     };
   }, [goal.id, user, goal.status]);
 
+  useEffect(() => {
+    if (!selectedStep) return;
+    setEvidenceNotes(selectedStep.evidenceNotes || selectedStep.completionProof || '');
+    setEvidenceUrl(selectedStep.evidenceUrl || '');
+    setConfidence(selectedStep.confidence || 3);
+    setStepFeedback(selectedStep.feedback || 'on-track');
+  }, [selectedStep]);
+
   const triggerAI = async (goalTitle: string, history: ChatMessage[]) => {
     setIsTyping(true);
     try {
@@ -543,7 +769,16 @@ function GoalDetailsLayout({ goal, onClose }: { goal: Goal, onClose: () => void 
   const handleDecompose = async () => {
     setIsGenerating(true);
     try {
-      const historyText = messages.map(m => `${m.role}: ${m.content}`).join('\n');
+      const goalProfile = [
+        `Deadline: ${goal.deadline || 'unset'}`,
+        `Weekly capacity: ${goal.weeklyMinutes || 150} minutes`,
+        `Skill level: ${goal.skillLevel || 'beginner'}`,
+        `Pace: ${goal.pace || 'steady'}`,
+        `Preferred work window: ${goal.preferredWindow || 'unset'}`,
+        `Motivation: ${goal.motivation || 'unset'}`,
+        `Constraints: ${goal.constraints || 'none'}`
+      ].join('\n');
+      const historyText = `${goalProfile}\n\nConversation:\n${messages.map(m => `${m.role}: ${m.content}`).join('\n')}`;
       const result = await generateMicroSteps(goal.title, historyText);
       for (let i = 0; i < result.steps.length; i++) {
         const step = result.steps[i];
@@ -573,7 +808,17 @@ function GoalDetailsLayout({ goal, onClose }: { goal: Goal, onClose: () => void 
   const handleDecomposeNextPhase = async () => {
     setIsGenerating(true);
     try {
-      const historyText = messages.map(m => `${m.role}: ${m.content}`).join('\n');
+      const adaptiveContext = [
+        `Deadline: ${goal.deadline || 'unset'}`,
+        `Weekly capacity: ${goal.weeklyMinutes || 150} minutes`,
+        `Skill level: ${goal.skillLevel || 'beginner'}`,
+        `Pace: ${goal.pace || 'steady'}`,
+        `Constraints: ${goal.constraints || 'none'}`,
+        `Adaptive signals: ${buildAdaptiveSignals(goal, steps).join(' ')}`,
+        `Completed proof coverage: ${proofCoverage}%`,
+        `Average confidence: ${confidenceAverage || 'N/A'}`
+      ].join('\n');
+      const historyText = `${adaptiveContext}\n\nConversation:\n${messages.map(m => `${m.role}: ${m.content}`).join('\n')}`;
       const currentCount = steps.length;
       const currentPhaseIndex = goal.currentPhase || 1;
       const nextPhaseIndex = currentPhaseIndex + 1;
@@ -682,6 +927,24 @@ function GoalDetailsLayout({ goal, onClose }: { goal: Goal, onClose: () => void 
     }
   };
 
+  const saveStepEvidence = async (markComplete = false) => {
+    if (!selectedStep) return;
+    try {
+      await updateDoc(doc(db, 'goals', goal.id, 'steps', selectedStep.id), {
+        evidenceNotes,
+        evidenceUrl,
+        completionProof: evidenceNotes,
+        confidence,
+        feedback: stepFeedback,
+        status: markComplete ? 'completed' : selectedStep.status,
+        completedAt: markComplete ? serverTimestamp() : (selectedStep.completedAt || null)
+      });
+      setSelectedStep(null);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, 'steps');
+    }
+  };
+
   const selectAnswer = (questionIdx: number, optionIdx: number) => {
     if (selectedAnswers[questionIdx] !== undefined) return;
     setSelectedAnswers(prev => ({
@@ -714,6 +977,20 @@ function GoalDetailsLayout({ goal, onClose }: { goal: Goal, onClose: () => void 
     100,
     Math.round(((currentPhaseIndex - 1) * 5) + ((activeCompletedCount / (activeStepsCount || 10)) * 5))
   );
+  const completedSteps = steps.filter(step => step.status === 'completed');
+  const pendingSteps = steps.filter(step => step.status !== 'completed');
+  const completedMinutes = completedSteps.reduce((sum, step) => sum + (step.durationMinutes || 0), 0);
+  const remainingMinutes = pendingSteps.reduce((sum, step) => sum + (step.durationMinutes || 0), 0);
+  const proofCount = completedSteps.filter(step => step.evidenceNotes || step.evidenceUrl || step.completionProof).length;
+  const proofCoverage = completedSteps.length ? Math.round((proofCount / completedSteps.length) * 100) : 0;
+  const confidenceAverage = completedSteps.length
+    ? Math.round(completedSteps.reduce((sum, step) => sum + (step.confidence || 3), 0) / completedSteps.length)
+    : 0;
+  const deadlineRemaining = daysUntil(goal.deadline);
+  const adaptiveSignals = buildAdaptiveSignals(goal, steps);
+  const scheduleSlots = buildScheduleSlots(goal, steps);
+  const weeklyCapacity = goal.weeklyMinutes || 150;
+  const weeksToFinishVisiblePlan = weeklyCapacity ? Math.ceil(remainingMinutes / weeklyCapacity) : null;
 
   // Show immersive sandbox terminal if terminal practice is active
   if (terminalStep) {
@@ -722,8 +999,22 @@ function GoalDetailsLayout({ goal, onClose }: { goal: Goal, onClose: () => void 
         goal={goal}
         step={terminalStep}
         onClose={() => setTerminalStep(null)}
-        onCompleteStep={async () => {
-          await toggleStep(terminalStep.id, 'pending');
+        onVerificationAttempt={async (passed, feedback) => {
+          await updateDoc(doc(db, 'goals', goal.id, 'steps', terminalStep.id), {
+            attemptCount: increment(1),
+            feedback: passed ? 'on-track' : 'too-hard',
+            completionProof: feedback
+          });
+        }}
+        onCompleteStep={async (proof) => {
+          await updateDoc(doc(db, 'goals', goal.id, 'steps', terminalStep.id), {
+            status: 'completed',
+            completedAt: serverTimestamp(),
+            completionProof: proof?.feedback || 'Sandbox verification passed.',
+            evidenceNotes: proof?.feedback || 'Sandbox verification passed.',
+            confidence: 5,
+            feedback: 'on-track'
+          });
           setTerminalStep(null);
         }}
       />
@@ -768,7 +1059,7 @@ function GoalDetailsLayout({ goal, onClose }: { goal: Goal, onClose: () => void 
             <p className="text-[10px] uppercase tracking-widest text-text-secondary mb-2">Goal Tracking Profile: High Sophistication Mode</p>
             <h1 className="text-4xl font-light text-text-primary tracking-tight">{goal.title}</h1>
             <div className="font-mono text-[11px] text-text-secondary opacity-60 uppercase mt-2 tracking-widest">
-              ID: {goal.id.slice(0, 8)} • PHASE {currentPhaseIndex} of 20 • {steps.length} TOTAL QUANTUM STEPS
+              ID: {goal.id.slice(0, 8)} • PHASE {currentPhaseIndex} of 20 • {steps.length} TOTAL STEPS • {paceLabels[goal.pace || 'steady']} PACE
             </div>
           </div>
           <button onClick={onClose} className="p-2 text-text-secondary hover:text-accent-blue transition-colors">
@@ -914,13 +1205,46 @@ function GoalDetailsLayout({ goal, onClose }: { goal: Goal, onClose: () => void 
                 <span className="text-text-primary">{currentPhaseIndex} / 20 ({overallProgressionPercent}%)</span>
               </div>
               <div className="flex justify-between items-center text-[10px] font-mono text-text-secondary uppercase">
-                <span>Phase Complete Threshold</span>
-                <span className="text-emerald-400">5% per Phase</span>
+                <span>Evidence Coverage</span>
+                <span className={proofCoverage >= 70 ? "text-emerald-400" : "text-yellow-400"}>{proofCoverage}%</span>
               </div>
               <div className="flex justify-between items-center text-[10px] font-mono text-text-secondary uppercase">
-                <span>Calibration Target</span>
-                <span className="text-text-primary">Mastery Framework</span>
+                <span>Completed Work</span>
+                <span className="text-text-primary">{formatMinutes(completedMinutes)}</span>
               </div>
+              <div className="flex justify-between items-center text-[10px] font-mono text-text-secondary uppercase">
+                <span>Visible Plan ETA</span>
+                <span className="text-text-primary">{weeksToFinishVisiblePlan ? `${weeksToFinishVisiblePlan} week${weeksToFinishVisiblePlan === 1 ? '' : 's'}` : 'Set capacity'}</span>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mt-8">
+          <section className="card">
+            <span className="card-label">Adaptive Roadmap</span>
+            <div className="space-y-3">
+              {adaptiveSignals.map((signal, idx) => (
+                <div key={idx} className="text-xs text-text-secondary leading-relaxed border-l border-accent-blue/40 pl-3">
+                  {signal}
+                </div>
+              ))}
+            </div>
+          </section>
+          <section className="card">
+            <span className="card-label">Mastery Analytics</span>
+            <div className="space-y-3 text-[11px] font-mono uppercase text-text-secondary">
+              <div className="flex justify-between"><span>Confidence Avg</span><span className="text-text-primary">{confidenceAverage || 'N/A'} / 5</span></div>
+              <div className="flex justify-between"><span>Remaining Load</span><span className="text-text-primary">{formatMinutes(remainingMinutes)}</span></div>
+              <div className="flex justify-between"><span>Attempt Count</span><span className="text-text-primary">{steps.reduce((sum, step) => sum + (step.attemptCount || 0), 0)}</span></div>
+              <div className="flex justify-between"><span>Deadline</span><span className={deadlineRemaining !== null && deadlineRemaining < 14 ? "text-yellow-400" : "text-text-primary"}>{deadlineRemaining === null ? 'Unset' : `${deadlineRemaining} days`}</span></div>
+            </div>
+          </section>
+          <section className="card">
+            <span className="card-label">User Constraints</span>
+            <p className="text-xs text-text-secondary leading-relaxed mb-3">{goal.constraints || 'No constraints captured yet.'}</p>
+            <div className="text-[10px] font-mono uppercase text-text-secondary">
+              Skill: <span className="text-text-primary">{goal.skillLevel || 'Uncalibrated'}</span>
             </div>
           </section>
         </div>
@@ -1019,13 +1343,17 @@ function GoalDetailsLayout({ goal, onClose }: { goal: Goal, onClose: () => void 
 
           {goal.status === 'active' && (
             <div className="pt-4 border-t border-border-color">
-              <span className="card-label mb-2">Diagnostic Calendar Map</span>
+              <span className="card-label mb-2">Schedule Intelligence</span>
               <div className="grid grid-cols-2 gap-2">
-                <div className="cal-slot hover:bg-white/5 transition-colors">08:15 — Pipeline</div>
-                <div className="cal-slot cal-slot-active text-white">12:45 — Optimal</div>
-                <div className="cal-slot hover:bg-white/5 transition-colors">14:00 — Busy Mode</div>
-                <div className="cal-slot hover:bg-white/5 transition-colors">19:30 — Post-Prime</div>
+                {scheduleSlots.map(slot => (
+                  <div key={`${slot.label}-${slot.detail}`} className={cn("cal-slot hover:bg-white/5 transition-colors", slot.active && "cal-slot-active text-white")}>
+                    {slot.label} — {slot.detail}
+                  </div>
+                ))}
               </div>
+              <p className="text-[10px] text-text-secondary/60 leading-relaxed mt-3">
+                Based on {formatMinutes(weeklyCapacity)} weekly capacity and the next visible step.
+              </p>
             </div>
           )}
         </div>
@@ -1039,7 +1367,7 @@ function GoalDetailsLayout({ goal, onClose }: { goal: Goal, onClose: () => void 
               initial={{ opacity: 0, scale: 0.95, y: 20 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: 20 }}
-              className="card max-w-2xl w-full p-8 border-accent-blue/30 shadow-[0_0_40px_rgba(56,189,248,0.1)] relative"
+              className="card max-w-4xl w-full p-8 border-accent-blue/30 shadow-[0_0_40px_rgba(56,189,248,0.1)] relative max-h-[90vh] overflow-y-auto"
             >
               <button 
                 onClick={() => setSelectedStep(null)}
@@ -1095,69 +1423,147 @@ function GoalDetailsLayout({ goal, onClose }: { goal: Goal, onClose: () => void 
                 </div>
               </div>
 
-              <div className="space-y-6 mb-10">
-                <div>
-                  <h3 className="text-xs font-mono uppercase text-text-primary tracking-widest mb-3 flex items-center space-x-2">
-                    <Info className="w-3 h-3 text-accent-blue" />
-                    <span>Operational Briefing</span>
-                  </h3>
-                  <p className="text-text-secondary text-sm leading-relaxed font-light">
-                    {selectedStep.description}
-                  </p>
-                </div>
-
-                <div className="p-4 bg-accent-glow border border-accent-blue/20 rounded-lg">
-                   <h3 className="text-[10px] font-mono uppercase text-accent-blue tracking-widest mb-2 flex items-center space-x-2">
-                     <ShieldAlert className="w-3 h-3" />
-                     <span>Precision Guidance</span>
-                   </h3>
-                   <p className="text-[11px] text-accent-blue/80 font-light leading-relaxed">
-                     Focus purely on this 15-30 minute interval. Do not expand the scope beyond the microscopic task. Precision is authority.
-                   </p>
-                </div>
-
-                <div className="p-4 rounded-lg bg-accent-blue/5 border border-accent-blue/20 flex flex-col sm:flex-row justify-between items-center gap-4">
-                  <div className="flex-1 text-left">
-                    <h3 className="text-[10px] font-mono uppercase text-accent-blue tracking-widest mb-1 flex items-center space-x-1.5 font-semibold">
-                      <Terminal className="w-3.5 h-3.5 animate-pulse" />
-                      <span>Practice Sandbox & Cloud VM</span>
+              <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-8 mb-10">
+                <div className="space-y-6">
+                  <div>
+                    <h3 className="text-xs font-mono uppercase text-text-primary tracking-widest mb-3 flex items-center space-x-2">
+                      <Info className="w-3 h-3 text-accent-blue" />
+                      <span>Operational Briefing</span>
                     </h3>
-                    <p className="text-[11px] text-text-secondary leading-relaxed font-light">
-                      Want to practice this step hands-on? Launch our interactive browser playground terminal or connect to an external server VM.
+                    <p className="text-text-secondary text-sm leading-relaxed font-light">
+                      {selectedStep.description}
                     </p>
                   </div>
-                  <button
-                    onClick={() => {
-                      setTerminalStep(selectedStep);
-                      setSelectedStep(null);
-                    }}
-                    className="btn-primary py-2 px-4 text-[10px] whitespace-nowrap uppercase tracking-wider flex items-center space-x-1.5"
-                    id="launch-practice-sandbox"
-                  >
-                    <span>Launch Sandbox</span>
-                  </button>
+
+                  <div>
+                    <h3 className="text-xs font-mono uppercase text-text-primary tracking-widest mb-3 flex items-center space-x-2">
+                      <CheckCircle2 className="w-3 h-3 text-accent-blue" />
+                      <span>Action Checklist</span>
+                    </h3>
+                    <div className="space-y-2">
+                      {buildStepChecklist(selectedStep).map(item => (
+                        <div key={item} className="flex items-start gap-3 text-xs text-text-secondary leading-relaxed">
+                          <Check className="w-3 h-3 text-accent-blue mt-0.5 shrink-0" />
+                          <span>{item}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <h3 className="text-xs font-mono uppercase text-text-primary tracking-widest mb-3 flex items-center space-x-2">
+                      <Target className="w-3 h-3 text-accent-blue" />
+                      <span>Success Criteria</span>
+                    </h3>
+                    <div className="space-y-2">
+                      {buildSuccessCriteria(selectedStep).map(item => (
+                        <div key={item} className="text-xs text-text-secondary leading-relaxed border-l border-accent-blue/30 pl-3">
+                          {item}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="p-4 bg-accent-glow border border-accent-blue/20 rounded-lg">
+                    <h3 className="text-[10px] font-mono uppercase text-accent-blue tracking-widest mb-2 flex items-center space-x-2">
+                      <ShieldAlert className="w-3 h-3" />
+                      <span>Common Failure Modes</span>
+                    </h3>
+                    <div className="space-y-1 text-[11px] text-accent-blue/80 font-light leading-relaxed">
+                      <p>Expanding the task beyond the allotted interval.</p>
+                      <p>Marking completion without proof or a visible artifact.</p>
+                      <p>Confusing research activity with a concrete next output.</p>
+                    </div>
+                  </div>
+
+                  <div className="p-4 rounded-lg bg-accent-blue/5 border border-accent-blue/20 flex flex-col sm:flex-row justify-between items-center gap-4">
+                    <div className="flex-1 text-left">
+                      <h3 className="text-[10px] font-mono uppercase text-accent-blue tracking-widest mb-1 flex items-center space-x-1.5 font-semibold">
+                        <Terminal className="w-3.5 h-3.5 animate-pulse" />
+                        <span>Practice Sandbox & Cloud VM</span>
+                      </h3>
+                      <p className="text-[11px] text-text-secondary leading-relaxed font-light">
+                        Practice the step in the browser lab, save attempts, and use verification as completion evidence.
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => {
+                        setTerminalStep(selectedStep);
+                        setSelectedStep(null);
+                      }}
+                      className="btn-primary py-2 px-4 text-[10px] whitespace-nowrap uppercase tracking-wider flex items-center space-x-1.5"
+                      id="launch-practice-sandbox"
+                    >
+                      <span>Launch Sandbox</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  <div className="p-4 bg-white/5 border border-border-color rounded-lg">
+                    <span className="card-label mb-3">Completion Evidence</span>
+                    <textarea
+                      value={evidenceNotes}
+                      onChange={(e) => setEvidenceNotes(e.target.value)}
+                      placeholder="What did you produce, decide, run, submit, or learn?"
+                      className="w-full bg-bg-darkest border border-border-color rounded p-3 text-xs text-text-primary focus:outline-none focus:border-accent-blue min-h-28 resize-none"
+                    />
+                    <input
+                      value={evidenceUrl}
+                      onChange={(e) => setEvidenceUrl(e.target.value)}
+                      placeholder="Optional proof link"
+                      className="w-full bg-bg-darkest border border-border-color rounded p-3 text-xs text-text-primary focus:outline-none focus:border-accent-blue mt-3"
+                    />
+                  </div>
+
+                  <div className="p-4 bg-white/5 border border-border-color rounded-lg">
+                    <span className="card-label mb-3">Mastery Signal</span>
+                    <label className="text-[10px] uppercase font-mono text-text-secondary tracking-widest">Confidence: {confidence}/5</label>
+                    <input
+                      type="range"
+                      min={1}
+                      max={5}
+                      value={confidence}
+                      onChange={(e) => setConfidence(Number(e.target.value))}
+                      className="w-full accent-sky-400 mt-2"
+                    />
+                    <select
+                      value={stepFeedback}
+                      onChange={(e) => setStepFeedback(e.target.value as MicroStep['feedback'])}
+                      className="w-full bg-bg-darkest border border-border-color rounded p-3 text-xs text-text-primary focus:outline-none focus:border-accent-blue mt-4"
+                    >
+                      <option value="on-track">On track</option>
+                      <option value="too-hard">Too hard</option>
+                      <option value="too-easy">Too easy</option>
+                      <option value="irrelevant">Irrelevant</option>
+                    </select>
+                  </div>
                 </div>
               </div>
 
-              <div className="flex items-center justify-between">
-                 <button 
-                  onClick={() => {
-                    toggleStep(selectedStep.id, selectedStep.status);
-                    setSelectedStep(null);
-                  }}
-                  className={cn(
-                    "btn-primary px-8 py-3",
-                    selectedStep.status === 'completed' ? "border-text-secondary text-text-secondary hover:bg-white/5" : ""
-                  )}
-                  id="complete-step-btn"
-                 >
-                   {selectedStep.status === 'completed' ? 'Revert to Pending' : 'Analyze as Completed'}
-                 </button>
-                 
-                 <div className="flex items-center space-x-4 text-text-secondary text-[10px] uppercase font-mono tracking-tighter opacity-40">
-                    <span>Path Level: Phase {currentPhaseIndex}</span>
-                    <ExternalLink className="w-3 h-3" />
-                 </div>
+              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                <div className="flex gap-3">
+                  <button 
+                    onClick={() => saveStepEvidence(selectedStep.status !== 'completed')}
+                    className={cn(
+                      "btn-primary px-8 py-3",
+                      selectedStep.status === 'completed' ? "border-text-secondary text-text-secondary hover:bg-white/5" : ""
+                    )}
+                    id="complete-step-btn"
+                  >
+                    {selectedStep.status === 'completed' ? 'Save Evidence' : 'Save Proof & Complete'}
+                  </button>
+                  <button
+                    onClick={() => saveStepEvidence(false)}
+                    className="btn-ghost"
+                  >
+                    Save Draft
+                  </button>
+                </div>
+                <div className="flex items-center space-x-4 text-text-secondary text-[10px] uppercase font-mono tracking-tighter opacity-40">
+                  <span>Path Level: Phase {currentPhaseIndex}</span>
+                  <ExternalLink className="w-3 h-3" />
+                </div>
               </div>
             </motion.div>
           </div>
