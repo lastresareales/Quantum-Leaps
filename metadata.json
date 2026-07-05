@@ -1,0 +1,6 @@
+{
+  "name": "Quantum Leaps",
+  "description": "A sophisticated goal tracking application that uses AI to break down your most ambitious goals into microscopic, achievable steps based on your real-world schedule.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

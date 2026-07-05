@@ -1,0 +1,94 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg-darkest: #05070A;
+  --color-bg-card: #0D1117;
+  --color-bg-sidebar: #0A0D12;
+  --color-accent-blue: #38BDF8;
+  --color-accent-glow: rgba(56, 189, 248, 0.15);
+  --color-text-primary: #F0F6FC;
+  --color-text-secondary: #8B949E;
+  --color-border-color: rgba(255, 255, 255, 0.08);
+  
+  --font-sans: "Helvetica Neue", Arial, system-ui, sans-serif;
+  --font-mono: "Courier New", Courier, monospace;
+}
+
+@layer base {
+  body {
+    @apply bg-bg-darkest text-text-primary font-sans antialiased;
+  }
+}
+
+@layer components {
+  .app-container-grid {
+    display: grid;
+    grid-template-columns: 260px 1fr 300px;
+    height: 100vh;
+  }
+  
+  .sidebar {
+    @apply bg-bg-sidebar border-r border-border-color p-6 flex flex-col;
+  }
+  
+  .main-content {
+    @apply p-10 flex flex-col overflow-y-auto;
+  }
+  
+  .ai-panel {
+    @apply bg-bg-sidebar border-l border-border-color p-6 flex flex-col overflow-y-auto;
+  }
+  
+  .card {
+    @apply bg-bg-card border border-border-color rounded-lg p-6 relative;
+  }
+  
+  .card-label {
+    @apply font-mono text-[10px] text-accent-blue uppercase mb-4 block tracking-wider;
+  }
+  
+  .btn-primary {
+    @apply px-6 py-2 bg-transparent border border-accent-blue text-accent-blue hover:bg-accent-glow transition-all rounded font-mono text-sm uppercase tracking-widest;
+  }
+  
+  .btn-ghost {
+    @apply px-4 py-2 text-text-secondary hover:text-text-primary transition-colors font-mono text-xs uppercase tracking-widest;
+  }
+  
+  .nav-item {
+    @apply py-3 text-[13px] text-text-secondary uppercase tracking-[1px] flex items-center cursor-pointer transition-colors hover:text-text-primary;
+  }
+  
+  .nav-item-active {
+    @apply text-text-primary font-bold;
+  }
+  
+  .nav-dot {
+    @apply w-1.5 h-1.5 bg-accent-blue rounded-full mr-3 shadow-[0_0_8px_var(--color-accent-blue)];
+  }
+
+  .ai-status-box {
+    @apply text-[12px] p-3 bg-accent-glow border border-accent-blue rounded text-accent-blue mb-6 text-center uppercase tracking-wide;
+  }
+  
+  .ai-bubble {
+    @apply bg-white/5 p-4 rounded-xl text-[13px] leading-relaxed text-text-secondary mb-4;
+  }
+  
+  .ai-bubble-highlight {
+    @apply text-text-primary border-l-2 border-accent-blue;
+  }
+
+  .cal-slot {
+    @apply h-[30px] border-l border-border-color ml-2 relative flex items-center pl-3 text-[11px] text-text-secondary;
+  }
+  
+  .cal-slot::before {
+    content: '';
+    @apply absolute -left-1 top-1/2 w-2 h-[1px] bg-border-color;
+  }
+  
+  .cal-slot-active {
+    @apply bg-accent-glow text-accent-blue border-l border-accent-blue font-bold;
+  }
+}

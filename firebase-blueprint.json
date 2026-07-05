@@ -1,0 +1,88 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile and integration settings",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "displayName": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "connectedServices": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "onboardingComplete": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email"]
+    },
+    "Goal": {
+      "title": "Goal",
+      "description": "A high-level ambition to be broken down",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "category": { "type": "string" },
+        "priority": { "type": "string", "enum": ["low", "medium", "high"] },
+        "status": { "type": "string", "enum": ["analyzing", "active", "completed", "archived"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "vibe": { "type": "string" }
+      },
+      "required": ["userId", "title", "status"]
+    },
+    "MicroStep": {
+      "title": "MicroStep",
+      "description": "A tiny, microscopic task derived from a goal",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "goalId": { "type": "string" },
+        "userId": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "durationMinutes": { "type": "number" },
+        "status": { "type": "string", "enum": ["pending", "in-progress", "completed", "skipped"] },
+        "scheduledAt": { "type": "string", "format": "date-time" },
+        "orderIndex": { "type": "number" },
+        "completedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["goalId", "userId", "title", "status", "orderIndex"]
+    },
+    "AIContext": {
+      "title": "AIContext",
+      "description": "Interrogation history and context for a specific goal",
+      "type": "object",
+      "properties": {
+        "goalId": { "type": "string" },
+        "userId": { "type": "string" },
+        "role": { "type": "string", "enum": ["user", "assistant", "system"] },
+        "content": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["goalId", "userId", "role", "content", "timestamp"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "Store user profiles and settings"
+    },
+    "/goals/{goalId}": {
+      "schema": "Goal",
+      "description": "Store high-level user goals"
+    },
+    "/goals/{goalId}/steps/{stepId}": {
+      "schema": "MicroStep",
+      "description": "Store broken down steps for a specific goal"
+    },
+    "/goals/{goalId}/history/{messageId}": {
+      "schema": "AIContext",
+      "description": "Store the AI interrogation history for a goal"
+    }
+  }
+}

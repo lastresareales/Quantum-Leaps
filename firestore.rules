@@ -1,0 +1,165 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Document ID: userId (UID)
+    // Fields:
+    //   - uid: string (required)
+    //   - email: string (required, format: email)
+    //   - displayName: string (optional)
+    //   - photoURL: string (optional)
+    //   - connectedServices: list (optional)
+    //   - onboardingComplete: bool (optional)
+    //   - createdAt: timestamp (required)
+    //
+    // Collection: goals
+    // Document ID: goalId
+    // Fields:
+    //   - userId: string (required, immutable)
+    //   - title: string (required, length < 100)
+    //   - description: string (optional, length < 1000)
+    //   - status: string (required, enum: analyzing, active, completed, archived)
+    //   - createdAt: timestamp (required, immutable)
+    //   - vibe: string (optional, length < 200)
+    //
+    // Subcollection: goals/{goalId}/steps
+    // Document ID: stepId
+    // Fields:
+    //   - goalId: string (required, immutable)
+    //   - userId: string (required, immutable)
+    //   - title: string (required, length < 200)
+    //   - status: string (required, enum: pending, in-progress, completed, skipped)
+    //   - orderIndex: int (required)
+    //
+    // Subcollection: goals/{goalId}/history
+    // Document ID: messageId
+    // Fields:
+    //   - goalId: string (required, immutable)
+    //   - userId: string (required, immutable)
+    //   - role: string (required, enum: user, assistant, system)
+    //   - content: string (required, length < 5000)
+    //   - timestamp: timestamp (required)
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && (
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('role', '') == 'admin') ||
+        (request.auth.token.get('email', '') == "lastresareales@gmail.com" && request.auth.token.get('email_verified', false) == true)
+      );
+    }
+
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    function isValidString(field, min, max) {
+      return request.resource.data[field] is string && 
+             request.resource.data[field].size() >= min && 
+             request.resource.data[field].size() <= max;
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'email', 'createdAt']) &&
+             data.uid == request.auth.uid &&
+             isValidEmail(data.email) &&
+             data.createdAt is timestamp;
+    }
+
+    function isValidGoal(data) {
+      return data.keys().hasAll(['userId', 'title', 'status', 'createdAt']) &&
+             data.userId == request.auth.uid &&
+             data.title is string && data.title.size() > 0 && data.title.size() <= 100 &&
+             data.status in ['analyzing', 'active', 'completed', 'archived'] &&
+             data.createdAt is timestamp;
+    }
+
+    function isValidStep(data, goalId) {
+      return data.keys().hasAll(['goalId', 'userId', 'title', 'status', 'orderIndex']) &&
+             data.goalId == goalId &&
+             data.userId == request.auth.uid &&
+             data.title is string && data.title.size() > 0 && data.title.size() <= 200 &&
+             data.status in ['pending', 'in-progress', 'completed', 'skipped'] &&
+             data.orderIndex is int;
+    }
+
+    function isValidHistory(data, goalId) {
+      return data.keys().hasAll(['goalId', 'userId', 'role', 'content', 'timestamp']) &&
+             data.goalId == goalId &&
+             data.userId == request.auth.uid &&
+             data.role in ['user', 'assistant', 'system'] &&
+             data.content is string && data.content.size() <= 5000 &&
+             data.timestamp is timestamp;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // User profiles
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow create: if isOwner(userId) && isValidUser(request.resource.data);
+      allow update: if isOwner(userId) && isValidUser(request.resource.data) && 
+                      request.resource.data.createdAt == resource.data.createdAt;
+      allow delete: if isAdmin();
+    }
+
+    // Goals
+    match /goals/{goalId} {
+      allow read: if isAuthenticated() && (resource == null || resource.data.get('userId', '') == request.auth.uid || isAdmin());
+      allow create: if isAuthenticated() && isValidGoal(request.resource.data);
+      allow update: if isAuthenticated() && (resource == null || resource.data.get('userId', '') == request.auth.uid || isAdmin()) &&
+                      isValidGoal(request.resource.data) &&
+                      request.resource.data.userId == resource.data.userId &&
+                      request.resource.data.createdAt == resource.data.createdAt;
+      allow delete: if isAuthenticated() && (resource == null || resource.data.get('userId', '') == request.auth.uid || isAdmin());
+
+      // Steps subcollection
+      match /steps/{stepId} {
+        allow read: if isAuthenticated() && (resource == null || resource.data.get('userId', '') == request.auth.uid || isAdmin());
+        allow create: if isAuthenticated() && isValidStep(request.resource.data, goalId);
+        allow update: if isAuthenticated() && (resource == null || resource.data.get('userId', '') == request.auth.uid || isAdmin()) &&
+                        isValidStep(request.resource.data, goalId) &&
+                        request.resource.data.userId == resource.data.userId &&
+                        request.resource.data.goalId == resource.data.goalId;
+        allow delete: if isAuthenticated() && (resource == null || resource.data.get('userId', '') == request.auth.uid || isAdmin());
+      }
+
+      // History subcollection
+      match /history/{messageId} {
+        allow read: if isAuthenticated() && (resource == null || resource.data.get('userId', '') == request.auth.uid || isAdmin());
+        allow create: if isAuthenticated() && isValidHistory(request.resource.data, goalId);
+        allow delete: if isAuthenticated() && (resource == null || resource.data.get('userId', '') == request.auth.uid || isAdmin());
+      }
+    }
+  }
+}
