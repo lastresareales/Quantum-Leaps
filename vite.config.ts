@@ -15,16 +15,12 @@ export default defineConfig(({mode}) => {
         '@': path.resolve(__dirname, '.'),
       },
     },
-    server: {
-<<<<<<< HEAD
-      // HMR can be disabled with DISABLE_HMR=true in environments where file watching is noisy.
-      hmr: env.DISABLE_HMR !== 'true',
-=======
+        server: {
       host: '0.0.0.0',
       port: 5000,
-      allowedHosts: true,
-      hmr: process.env.DISABLE_HMR !== 'true',
->>>>>>> refs/remotes/origin/main
-    },
+      allowedHosts: 'all',
+      // HMR can be disabled with DISABLE_HMR=true in environments where file watching is noisy.
+      hmr: env.DISABLE_HMR !== 'true',
+        },
   };
 });
