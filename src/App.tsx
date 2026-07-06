@@ -444,12 +444,6 @@ function Dashboard() {
   const totalWeeklyCapacity = goals.reduce((sum, goal) => sum + (goal.weeklyMinutes || 0), 0);
 
   return (
-<<<<<<< HEAD
-    <div className="app-container-grid bg-bg-darkest overflow-x-hidden md:overflow-hidden">
-      {/* Sidebar */}
-      <aside className="sidebar">
-        <div className="logo mb-12">Quantum Leaps</div>
-=======
     <div
       className="bg-bg-darkest overflow-hidden"
       style={{
@@ -463,7 +457,6 @@ function Dashboard() {
       {leftOpen ? (
         <aside className="sidebar relative overflow-hidden">
           <div className="logo mb-12 pr-6">Quantum Leaps</div>
->>>>>>> refs/remotes/origin/main
 
           <nav className="flex-1">
             <button
@@ -505,11 +498,6 @@ function Dashboard() {
                 <div className="stat-value text-accent-blue tracking-tighter">{goals.length ? Math.round((completedGoalCount / goals.length) * 100) : 0}%</div>
               </div>
             </div>
-<<<<<<< HEAD
-            <button onClick={logout} className="text-text-secondary hover:text-red-400 transition-colors shrink-0">
-              <LogOut className="w-3 h-3" />
-            </button>
-=======
             <div className="h-[2px] w-full bg-white/10 mt-2">
               <div className="h-full bg-accent-blue shadow-[0_0_8px_var(--color-accent-blue)]" style={{ width: `${goals.length ? Math.round((completedGoalCount / goals.length) * 100) : 0}%` }} />
             </div>
@@ -525,7 +513,6 @@ function Dashboard() {
                 <LogOut className="w-3 h-3" />
               </button>
             </div>
->>>>>>> refs/remotes/origin/main
           </div>
 
           {/* Collapse tab on right edge */}
@@ -1478,11 +1465,7 @@ function GoalDetailsLayout({ goal, onClose, rightOpen, setRightOpen }: { goal: G
               initial={{ opacity: 0, scale: 0.95, y: 20 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: 20 }}
-<<<<<<< HEAD
-              className="card max-w-2xl w-full p-6 sm:p-8 border-accent-blue/30 shadow-[0_0_40px_rgba(56,189,248,0.1)] relative"
-=======
               className="card max-w-4xl w-full p-8 border-accent-blue/30 shadow-[0_0_40px_rgba(56,189,248,0.1)] relative max-h-[90vh] overflow-y-auto"
->>>>>>> refs/remotes/origin/main
             >
               <button 
                 onClick={() => setSelectedStep(null)}
@@ -1654,29 +1637,6 @@ function GoalDetailsLayout({ goal, onClose, rightOpen, setRightOpen }: { goal: G
                     </select>
                   </div>
                 </div>
-              </div>
-
-<<<<<<< HEAD
-              <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-                 <button 
-                  onClick={() => {
-                    toggleStep(selectedStep.id, selectedStep.status);
-                    setSelectedStep(null);
-                  }}
-                  className={cn(
-                    "btn-primary px-8 py-3",
-                    selectedStep.status === 'completed' ? "border-text-secondary text-text-secondary hover:bg-white/5" : ""
-                  )}
-                  id="complete-step-btn"
-                 >
-                   {selectedStep.status === 'completed' ? 'Revert to Pending' : 'Analyze as Completed'}
-                 </button>
-                 
-                 <div className="flex items-center space-x-4 text-text-secondary text-[10px] uppercase font-mono tracking-tighter opacity-40">
-                    <span>Path Level: Phase {currentPhaseIndex}</span>
-                    <ExternalLink className="w-3 h-3" />
-                 </div>
-=======
               <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
                 <div className="flex gap-3">
                   <button 
@@ -1700,7 +1660,7 @@ function GoalDetailsLayout({ goal, onClose, rightOpen, setRightOpen }: { goal: G
                   <span>Path Level: Phase {currentPhaseIndex}</span>
                   <ExternalLink className="w-3 h-3" />
                 </div>
->>>>>>> refs/remotes/origin/main
+              </div>
               </div>
             </motion.div>
           </div>

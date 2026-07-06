@@ -74,7 +74,6 @@ interface FileState {
   isLocked?: boolean;
 }
 
-<<<<<<< HEAD
 type CommandKey = 'run' | 'verify' | 'hint' | 'readme' | 'reset' | 'close';
 
 interface CommandItem {
@@ -84,10 +83,7 @@ interface CommandItem {
   tone?: 'default' | 'danger';
 }
 
-export default function TerminalSandbox({ goal, step, onClose, onCompleteStep }: TerminalSandboxProps) {
-=======
 export default function TerminalSandbox({ goal, step, onClose, onCompleteStep, onVerificationAttempt }: TerminalSandboxProps) {
->>>>>>> refs/remotes/origin/main
   const [challenge, setChallenge] = useState<any | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
