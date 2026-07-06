@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Terminal as TerminalIcon, 
@@ -73,6 +73,15 @@ interface FileState {
   isLocked?: boolean;
 }
 
+type CommandKey = 'run' | 'verify' | 'hint' | 'readme' | 'reset' | 'close';
+
+interface CommandItem {
+  key: CommandKey;
+  label: string;
+  shortcut?: string;
+  tone?: 'default' | 'danger';
+}
+
 export default function TerminalSandbox({ goal, step, onClose, onCompleteStep }: TerminalSandboxProps) {
   const [challenge, setChallenge] = useState<any | null>(null);
   const [loading, setLoading] = useState(true);
@@ -94,6 +103,21 @@ export default function TerminalSandbox({ goal, step, onClose, onCompleteStep }:
   const [commandQuery, setCommandQuery] = useState('');
   const [editorCursor, setEditorCursor] = useState({ line: 1, col: 1 });
   const [problemsCount, setProblemsCount] = useState(0);
+
+  const commandItems: CommandItem[] = [
+    { key: 'run', label: 'Run active file in terminal', shortcut: 'Ctrl+F5' },
+    { key: 'verify', label: 'Run solution verification checks', shortcut: 'Shift+Alt+V' },
+    { key: 'hint', label: 'Toggle challenge hint visibility', shortcut: 'Alt+H' },
+    { key: 'readme', label: 'Open challenge README instructions', shortcut: 'README.md' },
+    { key: 'reset', label: 'Reset sandbox workspace to defaults' },
+    { key: 'close', label: 'Close current sandbox session', tone: 'danger' }
+  ];
+
+  const filteredCommandItems = useMemo(() => {
+    const q = commandQuery.trim().toLowerCase();
+    if (!q) return commandItems;
+    return commandItems.filter(item => item.label.toLowerCase().includes(q) || item.key.includes(q));
+  }, [commandQuery]);
 
   // Terminal screen output
   const [consoleLogs, setConsoleLogs] = useState<{ text: string; type: 'info' | 'error' | 'success' | 'warn' | 'input' }[]>([]);
@@ -267,6 +291,8 @@ export default function TerminalSandbox({ goal, step, onClose, onCompleteStep }:
 
   const closeTab = (name: string, e: React.MouseEvent) => {
     e.stopPropagation();
+    if (tabsList.length <= 1) return;
+
     const updatedTabs = tabsList.filter(t => t !== name);
     setTabsList(updatedTabs);
     if (activeFileName === name && updatedTabs.length > 0) {
@@ -276,14 +302,24 @@ export default function TerminalSandbox({ goal, step, onClose, onCompleteStep }:
 
   const runActiveFile = async () => {
     setActiveTerminalTab('terminal');
-    addToConsole(`\nnode C:\\Users\\quantum\\workspace> python ${activeFileName}`, "input");
+    const practiceType = challenge?.practiceType;
+    const commandPrefix =
+      practiceType === 'python'
+        ? 'python'
+        : practiceType === 'javascript'
+          ? 'node'
+          : practiceType === 'bash'
+            ? 'bash'
+            : 'run';
+
+    addToConsole(`\nC:\\Users\\quantum\\workspace> ${commandPrefix} ${activeFileName}`, "input");
     
     const editorCode = currentFile.content;
     
     if (challenge?.practiceType === 'python') {
       await executePython(editorCode);
     } else if (challenge?.practiceType === 'javascript') {
-      executeJS(editorCode);
+      await executeJS(editorCode);
     } else {
       executeSimulated(editorCode);
     }
@@ -342,29 +378,81 @@ export default function TerminalSandbox({ goal, step, onClose, onCompleteStep }:
     }
   };
 
-  const executeJS = (editorCode: string) => {
+  const executeJS = async (editorCode: string) => {
     try {
-      const logs: string[] = [];
-      const originalLog = console.log;
-      console.log = (...args) => {
-        logs.push(args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : arg).join(' '));
-      };
+      // Execute JavaScript in an isolated Web Worker to avoid direct access to window/document.
+      const workerSource = `
+        self.onmessage = (event) => {
+          const code = event.data;
+          const logs = [];
+          const originalLog = console.log;
+          const originalError = console.error;
+          const originalWarn = console.warn;
+
+          const push = (...args) => logs.push(args.map((arg) => {
+            if (typeof arg === 'object') {
+              try { return JSON.stringify(arg); } catch { return '[object]'; }
+            }
+            return String(arg);
+          }).join(' '));
+
+          console.log = (...args) => push(...args);
+          console.error = (...args) => push(...args);
+          console.warn = (...args) => push(...args);
+
+          try {
+            const result = new Function(code)();
+            self.postMessage({ logs, result: result === undefined ? null : String(result), error: null });
+          } catch (error) {
+            self.postMessage({ logs, result: null, error: error instanceof Error ? error.message : String(error) });
+          } finally {
+            console.log = originalLog;
+            console.error = originalError;
+            console.warn = originalWarn;
+          }
+        };
+      `;
+
+      const blob = new Blob([workerSource], { type: 'application/javascript' });
+      const workerUrl = URL.createObjectURL(blob);
 
       try {
-        const result = eval(editorCode);
-        console.log = originalLog;
-        
-        if (logs.length > 0) {
-          addToConsole(logs.join('\n'), "success");
-        } else if (result !== undefined) {
-          addToConsole(String(result), "success");
-        } else {
-          addToConsole("JavaScript environment finished process status: exit code 0", "warn");
+        const workerResult = await new Promise<{ logs: string[]; result: string | null; error: string | null }>((resolve, reject) => {
+          const worker = new Worker(workerUrl);
+          const timeout = window.setTimeout(() => {
+            worker.terminate();
+            reject(new Error('Execution timed out after 3 seconds.'));
+          }, 3000);
+
+          worker.onmessage = (event: MessageEvent<{ logs: string[]; result: string | null; error: string | null }>) => {
+            window.clearTimeout(timeout);
+            worker.terminate();
+            resolve(event.data);
+          };
+
+          worker.onerror = () => {
+            window.clearTimeout(timeout);
+            worker.terminate();
+            reject(new Error('Worker execution failed.'));
+          };
+
+          worker.postMessage(editorCode);
+        });
+
+        if (workerResult.logs.length > 0) {
+          addToConsole(workerResult.logs.join('\n'), workerResult.error ? 'warn' : 'success');
         }
-      } catch (innerErr: any) {
-        console.log = originalLog;
-        addToConsole(innerErr.message, "error");
-        setProblemsCount(prev => prev + 1);
+
+        if (workerResult.error) {
+          addToConsole(workerResult.error, 'error');
+          setProblemsCount(prev => prev + 1);
+        } else if (workerResult.result !== null) {
+          addToConsole(workerResult.result, 'success');
+        } else if (workerResult.logs.length === 0) {
+          addToConsole('JavaScript environment finished process status: exit code 0', 'warn');
+        }
+      } finally {
+        URL.revokeObjectURL(workerUrl);
       }
     } catch (err: any) {
       addToConsole(err.message, "error");
@@ -430,14 +518,31 @@ export default function TerminalSandbox({ goal, step, onClose, onCompleteStep }:
     }
   };
 
-  const handleCommandPaletteSelect = (cmdKey: string) => {
+  const handleCommandPaletteSelect = (cmdKey: CommandKey) => {
     setShowCommandPalette(false);
-    if (cmdKey === 'run') runActiveFile();
-    if (cmdKey === 'verify') handleVerify();
-    if (cmdKey === 'reset') handleResetEditor();
-    if (cmdKey === 'readme') switchFile('README.md');
-    if (cmdKey === 'hint') setShowHint(prev => !prev);
-    if (cmdKey === 'close') onClose();
+
+    switch (cmdKey) {
+      case 'run':
+        void runActiveFile();
+        break;
+      case 'verify':
+        void handleVerify();
+        break;
+      case 'reset':
+        handleResetEditor();
+        break;
+      case 'readme':
+        switchFile('README.md');
+        break;
+      case 'hint':
+        setShowHint(prev => !prev);
+        break;
+      case 'close':
+        onClose();
+        break;
+      default:
+        break;
+    }
   };
 
   // Find occurrences for simple VS Code search bar imitation
@@ -545,64 +650,33 @@ export default function TerminalSandbox({ goal, step, onClose, onCompleteStep }:
                 </button>
               </div>
               <div className="max-h-[220px] overflow-y-auto text-[10px] p-1.5 space-y-1 bg-[#252526]" id="command-palette-results">
-                <div 
-                  className="p-2 hover:bg-[#007ACC] hover:text-white cursor-pointer rounded flex justify-between items-center"
-                  onClick={() => handleCommandPaletteSelect('run')}
-                >
-                  <span className="flex items-center space-x-2">
-                    <Play className="w-3 h-3" />
-                    <span>Run Task Compiler Code: execute workspace command process</span>
-                  </span>
-                  <span className="opacity-45 text-[9px]">Ctrl+F5</span>
-                </div>
-                <div 
-                  className="p-2 hover:bg-[#007ACC] hover:text-white cursor-pointer rounded flex justify-between items-center"
-                  onClick={() => handleCommandPaletteSelect('verify')}
-                >
-                  <span className="flex items-center space-x-2">
-                    <CheckCircle className="w-3 h-3" />
-                    <span>Laboratory Validation check: Submit active files code metrics</span>
-                  </span>
-                  <span className="opacity-45 text-[9px]">Shift+Alt+V</span>
-                </div>
-                <div 
-                  className="p-2 hover:bg-[#007ACC] hover:text-white cursor-pointer rounded flex justify-between items-center"
-                  onClick={() => handleCommandPaletteSelect('hint')}
-                >
-                  <span className="flex items-center space-x-2">
-                    <Lightbulb className="w-3 h-3" />
-                    <span>Toggle Practice Hint: Toggle AI overlay code tips</span>
-                  </span>
-                  <span className="opacity-45 text-[9px]">Alt+H</span>
-                </div>
-                <div 
-                  className="p-2 hover:bg-[#007ACC] hover:text-white cursor-pointer rounded flex justify-between items-center"
-                  onClick={() => handleCommandPaletteSelect('readme')}
-                >
-                  <span className="flex items-center space-x-2">
-                    <BookOpen className="w-3 h-3" />
-                    <span>Open Step README instructions documentation</span>
-                  </span>
-                  <span className="opacity-45 text-[9px]">index.md</span>
-                </div>
-                <div 
-                  className="p-2 hover:bg-[#007ACC] hover:text-white cursor-pointer rounded flex justify-between items-center"
-                  onClick={() => handleCommandPaletteSelect('reset')}
-                >
-                  <span className="flex items-center space-x-2">
-                    <RotateCcw className="w-3 h-3" />
-                    <span>Reset Calibration Sandbox: Reset workspace repository state</span>
-                  </span>
-                </div>
-                <div 
-                  className="p-2 hover:bg-[#FF3B30] hover:text-white cursor-pointer rounded flex justify-between items-center"
-                  onClick={() => handleCommandPaletteSelect('close')}
-                >
-                  <span className="flex items-center space-x-2">
-                    <X className="w-3 h-3 text-red-400" />
-                    <span>Close current laboratory session workspace</span>
-                  </span>
-                </div>
+                {filteredCommandItems.length === 0 ? (
+                  <div className="p-2 text-[#858585] text-[10px]">No commands match this query.</div>
+                ) : (
+                  filteredCommandItems.map((item) => {
+                    const isDanger = item.tone === 'danger';
+                    return (
+                      <div
+                        key={item.key}
+                        className={`p-2 cursor-pointer rounded flex justify-between items-center ${
+                          isDanger ? 'hover:bg-[#FF3B30] hover:text-white' : 'hover:bg-[#007ACC] hover:text-white'
+                        }`}
+                        onClick={() => handleCommandPaletteSelect(item.key)}
+                      >
+                        <span className="flex items-center space-x-2">
+                          {item.key === 'run' && <Play className="w-3 h-3" />}
+                          {item.key === 'verify' && <CheckCircle className="w-3 h-3" />}
+                          {item.key === 'hint' && <Lightbulb className="w-3 h-3" />}
+                          {item.key === 'readme' && <BookOpen className="w-3 h-3" />}
+                          {item.key === 'reset' && <RotateCcw className="w-3 h-3" />}
+                          {item.key === 'close' && <X className="w-3 h-3 text-red-400" />}
+                          <span>{item.label}</span>
+                        </span>
+                        {item.shortcut && <span className="opacity-45 text-[9px]">{item.shortcut}</span>}
+                      </div>
+                    );
+                  })
+                )}
               </div>
             </motion.div>
           </div>
@@ -610,11 +684,11 @@ export default function TerminalSandbox({ goal, step, onClose, onCompleteStep }:
       </AnimatePresence>
 
       {/* Main Workspace Frame split */}
-      <div className="flex-1 flex flex-row overflow-hidden min-h-0 bg-[#1e1e1e]">
+      <div className="flex-1 flex flex-col md:flex-row overflow-hidden min-h-0 bg-[#1e1e1e]">
         
         {/* VS Code Activity Bar (Slim vertical ribbon on far left) */}
-        <section className="w-[45px] bg-[#333333] border-r border-[#2B2B2B] flex flex-col justify-between items-center py-2 shrink-0 select-none">
-          <div className="flex flex-col items-center space-y-4 w-full">
+        <section className="w-full md:w-[45px] bg-[#333333] border-b md:border-b-0 md:border-r border-[#2B2B2B] flex flex-row md:flex-col justify-between items-center py-2 shrink-0 select-none overflow-x-auto md:overflow-x-visible">
+          <div className="flex flex-row md:flex-col items-center gap-4 md:space-y-4 w-full md:w-auto justify-center">
             {/* Explorer */}
             <button 
               onClick={() => {
@@ -682,7 +756,7 @@ export default function TerminalSandbox({ goal, step, onClose, onCompleteStep }:
             </button>
           </div>
 
-          <div className="flex flex-col items-center space-y-3 w-full">
+          <div className="flex flex-row md:flex-col items-center gap-3 md:space-y-3 w-full md:w-auto justify-center">
             {/* Settings */}
             <button 
               onClick={handleResetEditor} 
@@ -707,7 +781,7 @@ export default function TerminalSandbox({ goal, step, onClose, onCompleteStep }:
 
         {/* VS Code Primary Sidebar (Foldable, Lighter Dark theme) */}
         {sidebarOpen && (
-          <aside className="w-[245px] bg-[#252526] border-r border-[#2B2B2B] flex flex-col overflow-hidden shrink-0 select-none">
+          <aside className="w-full md:w-[245px] max-h-[42vh] md:max-h-none bg-[#252526] border-b md:border-b-0 md:border-r border-[#2B2B2B] flex flex-col overflow-hidden shrink-0 select-none">
             
             {/* Sidebar View Head */}
             <div className="h-9 px-3 border-b border-[#2B2B2B] flex items-center justify-between text-[10px] uppercase font-bold text-[#B5B5B5] tracking-tight">
@@ -939,7 +1013,7 @@ export default function TerminalSandbox({ goal, step, onClose, onCompleteStep }:
         <main className="flex-1 flex flex-col bg-[#1E1E1E] overflow-hidden min-h-0">
           
           {/* Horizontal file editors tabs menu bar */}
-          <div className="h-9 bg-[#252526] border-b border-[#2B2B2B] flex justify-between items-center shrink-0">
+          <div className="h-auto md:h-9 bg-[#252526] border-b border-[#2B2B2B] flex flex-col md:flex-row justify-between items-stretch md:items-center shrink-0">
             
             {/* Scrollable container for open files tabs */}
             <div className="flex-1 flex overflow-x-auto min-h-0 scrollbar-none">
@@ -977,10 +1051,10 @@ export default function TerminalSandbox({ goal, step, onClose, onCompleteStep }:
             </div>
 
             {/* Control buttons in tab menu row */}
-            <div className="flex items-center px-3 space-x-3 bg-[#252526] h-full shrink-0">
+            <div className="flex items-center px-3 py-2 md:py-0 space-x-3 bg-[#252526] h-full shrink-0 flex-wrap md:flex-nowrap">
               
               {/* Dynamic layout tab option selectors */}
-              <div className="flex items-center bg-[#1E1E1E] p-0.5 rounded border border-[#3C3C3C] gap-0.5" id="layout-view-tabs">
+                <div className="flex items-center bg-[#1E1E1E] p-0.5 rounded border border-[#3C3C3C] gap-0.5 w-full md:w-auto justify-between md:justify-start" id="layout-view-tabs">
                 <button
                   onClick={() => setWorkspaceLayoutTab('split')}
                   className={`px-2 py-0.5 text-[9px] uppercase tracking-wider font-extrabold rounded-sm transition-all flex items-center gap-1 ${
@@ -1073,7 +1147,7 @@ export default function TerminalSandbox({ goal, step, onClose, onCompleteStep }:
 
             {/* Splitter border and pane toggler bar */}
             {workspaceLayoutTab !== 'editor' && (
-              <div className="h-9 bg-[#1E1E1E] border-t border-[#2B2B2B] flex justify-between items-center shrink-0">
+              <div className="h-auto md:h-9 bg-[#1E1E1E] border-t border-[#2B2B2B] flex flex-col md:flex-row justify-between items-stretch md:items-center shrink-0">
                 <div className="flex h-full items-center bg-[#252526] border-r border-[#2b2b2b]">
                   {/* Switch Terminal tab */}
                   <button 
@@ -1122,7 +1196,7 @@ export default function TerminalSandbox({ goal, step, onClose, onCompleteStep }:
                 </div>
 
                 {/* Action utilities and resizing triggers */}
-                <div className="flex items-center space-x-3 px-4 h-full bg-[#252526] border-l border-[#2b2b2b]">
+                <div className="flex items-center space-x-3 px-4 py-2 md:py-0 h-full bg-[#252526] border-l border-[#2b2b2b] flex-wrap md:flex-nowrap">
                   {workspaceLayoutTab === 'split' && (
                     <button
                       onClick={() => {

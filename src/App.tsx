@@ -292,7 +292,7 @@ function Dashboard() {
   const selectedGoal = goals.find(g => g.id === selectedGoalId);
 
   return (
-    <div className="app-container-grid bg-bg-darkest overflow-hidden">
+    <div className="app-container-grid bg-bg-darkest overflow-x-hidden md:overflow-hidden">
       {/* Sidebar */}
       <aside className="sidebar">
         <div className="logo mb-12">Quantum Leaps</div>
@@ -348,7 +348,7 @@ function Dashboard() {
                 <p className="text-text-primary text-[10px] font-medium truncate">{user?.displayName?.split(' ')[0]}</p>
               </div>
             </div>
-            <button onClick={logout} className="text-text-secondary hover:text-red-400 transition-colors">
+            <button onClick={logout} className="text-text-secondary hover:text-red-400 transition-colors shrink-0">
               <LogOut className="w-3 h-3" />
             </button>
           </div>
@@ -360,9 +360,9 @@ function Dashboard() {
         {!selectedGoalId ? (
           <React.Fragment key="dashboard-empty">
             <main className="main-content">
-              <header className="mb-12">
+              <header className="mb-8 sm:mb-12">
                 <p className="text-[10px] uppercase tracking-widest text-text-secondary mb-2">Strategy Dashboard • Level 01</p>
-                <h1 className="text-4xl font-light text-text-primary">Operational <span className="text-accent-blue italic">Overview</span></h1>
+                <h1 className="text-3xl sm:text-4xl font-light text-text-primary leading-tight">Operational <span className="text-accent-blue italic">Overview</span></h1>
               </header>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -763,10 +763,10 @@ function GoalDetailsLayout({ goal, onClose }: { goal: Goal, onClose: () => void 
   return (
     <React.Fragment>
       <main className="main-content">
-        <header className="mb-12 flex justify-between items-start">
+        <header className="mb-8 flex flex-col gap-4 sm:mb-12 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <p className="text-[10px] uppercase tracking-widest text-text-secondary mb-2">Goal Tracking Profile: High Sophistication Mode</p>
-            <h1 className="text-4xl font-light text-text-primary tracking-tight">{goal.title}</h1>
+            <h1 className="text-3xl sm:text-4xl font-light text-text-primary tracking-tight leading-tight">{goal.title}</h1>
             <div className="font-mono text-[11px] text-text-secondary opacity-60 uppercase mt-2 tracking-widest">
               ID: {goal.id.slice(0, 8)} • PHASE {currentPhaseIndex} of 20 • {steps.length} TOTAL QUANTUM STEPS
             </div>
@@ -901,7 +901,7 @@ function GoalDetailsLayout({ goal, onClose }: { goal: Goal, onClose: () => void 
             </div>
           </section>
 
-          <section className="card flex flex-col items-center justify-center p-12 text-center h-full max-h-[450px]">
+          <section className="card flex flex-col items-center justify-center p-8 sm:p-12 text-center h-full max-h-[450px]">
             <span className="card-label absolute top-6 left-6">Goal Decomposition Engine</span>
             <div className="text-7xl font-extralight text-accent-blue tracking-tighter mb-4">
               {steps.length > 0 ? overallProgressionPercent : 0}<span className="text-2xl font-light opacity-60 ml-1">%</span>
@@ -1034,12 +1034,12 @@ function GoalDetailsLayout({ goal, onClose }: { goal: Goal, onClose: () => void 
       {/* Step Detail Modal */}
       <AnimatePresence>
         {selectedStep && (
-          <div className="fixed inset-0 bg-bg-darkest/95 backdrop-blur-md z-[100] flex items-center justify-center p-6">
+          <div className="fixed inset-0 bg-bg-darkest/95 backdrop-blur-md z-[100] flex items-center justify-center p-4 sm:p-6 overflow-y-auto">
             <motion.div 
               initial={{ opacity: 0, scale: 0.95, y: 20 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: 20 }}
-              className="card max-w-2xl w-full p-8 border-accent-blue/30 shadow-[0_0_40px_rgba(56,189,248,0.1)] relative"
+              className="card max-w-2xl w-full p-6 sm:p-8 border-accent-blue/30 shadow-[0_0_40px_rgba(56,189,248,0.1)] relative"
             >
               <button 
                 onClick={() => setSelectedStep(null)}
@@ -1049,18 +1049,18 @@ function GoalDetailsLayout({ goal, onClose }: { goal: Goal, onClose: () => void 
                 <Plus className="w-6 h-6 rotate-45" />
               </button>
 
-              <div className="flex items-center space-x-3 mb-6">
+              <div className="flex items-center space-x-3 mb-6 pr-10">
                 <span className="card-label mb-0">Quantum Execution Protocol</span>
                 <span className="text-[10px] text-text-secondary font-mono opacity-50 uppercase tracking-tighter">
                   Step {steps.indexOf(selectedStep) + 1} of {steps.length}
                 </span>
               </div>
 
-              <h2 className="text-3xl font-light text-text-primary tracking-tight mb-4">
+              <h2 className="text-2xl sm:text-3xl font-light text-text-primary tracking-tight leading-tight mb-4">
                 {selectedStep.title}
               </h2>
 
-              <div className="flex items-center space-x-8 mb-8 pb-8 border-b border-border-color">
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:space-x-8 mb-8 pb-8 border-b border-border-color">
                 <div className="flex flex-col">
                   <span className="text-[9px] text-text-secondary uppercase tracking-widest mb-1">Time Profile</span>
                   <div className="flex items-center space-x-2 text-accent-blue font-mono">
@@ -1139,7 +1139,7 @@ function GoalDetailsLayout({ goal, onClose }: { goal: Goal, onClose: () => void 
                 </div>
               </div>
 
-              <div className="flex items-center justify-between">
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                  <button 
                   onClick={() => {
                     toggleStep(selectedStep.id, selectedStep.status);
@@ -1212,10 +1212,10 @@ function ExamCenter({
         <div className="absolute top-1/4 left-1/3 w-[600px] h-[600px] bg-accent-blue/5 blur-[150px] rounded-full" />
       </div>
 
-      <header className="border-b border-border-color/60 py-6 px-12 flex justify-between items-center z-10 bg-bg-darkest/80 backdrop-blur-md sticky top-0">
+      <header className="border-b border-border-color/60 py-4 px-4 sm:py-6 sm:px-12 flex flex-col gap-4 sm:flex-row sm:justify-between sm:items-center z-10 bg-bg-darkest/80 backdrop-blur-md sticky top-0">
         <div>
           <span className="text-[9px] uppercase tracking-widest text-accent-blue font-mono">Quantum Coach Compete Protocol</span>
-          <h2 className="text-xl font-light tracking-tight">{goal.title}</h2>
+          <h2 className="text-lg sm:text-xl font-light tracking-tight leading-tight">{goal.title}</h2>
         </div>
         <button 
           onClick={onClose}
@@ -1254,7 +1254,7 @@ function ExamCenter({
             initial={{ opacity: 0, x: 20 }}
             animate={{ opacity: 1, x: 0 }}
             exit={{ opacity: 0, x: -20 }}
-            className="w-full max-w-3xl card p-8 border-border-color/80 relative"
+            className="w-full max-w-3xl card p-5 sm:p-8 border-border-color/80 relative"
           >
             <div className="absolute top-0 left-0 w-full h-[2px] bg-white/5">
               <div 
@@ -1263,7 +1263,7 @@ function ExamCenter({
               />
             </div>
 
-            <div className="flex justify-between items-center mb-8">
+            <div className="flex flex-col gap-3 sm:flex-row sm:justify-between sm:items-center mb-8">
               <span className="card-label mb-0 uppercase text-[10px] tracking-widest font-mono text-accent-blue">
                 Phase {currentPhaseIndex} Evaluator
               </span>

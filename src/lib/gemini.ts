@@ -3,6 +3,26 @@ import { GoogleGenAI, Type } from "@google/genai";
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
 const model = "gemini-3.1-pro-preview";
 
+function parseModelJson<T>(rawText: string | undefined, fallback: T): T {
+  if (!rawText) return fallback;
+
+  const normalized = rawText.trim();
+
+  try {
+    return JSON.parse(normalized) as T;
+  } catch {
+    const fencedMatch = normalized.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+    if (fencedMatch?.[1]) {
+      try {
+        return JSON.parse(fencedMatch[1]) as T;
+      } catch {
+        return fallback;
+      }
+    }
+    return fallback;
+  }
+}
+
 const SYSTEM_INSTRUCTION = `You are "Quantum Coach", the AI engine behind Quantum Leaps. 
 Your purpose is to break down ambitious goals into "microscopic steps" that fit into a user's real-world schedule.
 
@@ -81,7 +101,10 @@ export async function generateNextPhaseSteps(
     }
   });
 
-  return JSON.parse(response.text || '{"steps": []}');
+  return parseModelJson<{ steps: Array<{ title: string; description: string; durationMinutes: number; difficulty: number }> }>(
+    response.text,
+    { steps: [] }
+  );
 }
 
 
@@ -120,7 +143,10 @@ export async function generateMicroSteps(goalTitle: string, context: string) {
     }
   });
 
-  return JSON.parse(response.text || '{"steps": []}');
+  return parseModelJson<{ steps: Array<{ title: string; description: string; durationMinutes: number; difficulty: number }> }>(
+    response.text,
+    { steps: [] }
+  );
 }
 
 export async function generatePhaseQuiz(goalTitle: string, phaseIndex: number, stepsText: string) {
@@ -169,7 +195,14 @@ export async function generatePhaseQuiz(goalTitle: string, phaseIndex: number, s
     }
   });
 
-  return JSON.parse(response.text || '{"questions": []}');
+  return parseModelJson<{
+    questions: Array<{
+      question: string;
+      options: string[];
+      correctIndex: number;
+      explanation: string;
+    }>;
+  }>(response.text, { questions: [] });
 }
 
 export async function generateTerminalChallenge(goalTitle: string, stepTitle: string, stepDescription: string) {
@@ -211,7 +244,23 @@ export async function generateTerminalChallenge(goalTitle: string, stepTitle: st
     }
   });
 
-  return JSON.parse(response.text || '{}');
+  return parseModelJson<{
+    isTerminalPractice: boolean;
+    practiceType: string;
+    tutorialMarkdown: string;
+    challengeInstructions: string;
+    startingCode: string;
+    hint: string;
+    externalPracticeLink: string;
+  }>(response.text, {
+    isTerminalPractice: false,
+    practiceType: 'generic',
+    tutorialMarkdown: '',
+    challengeInstructions: '',
+    startingCode: '',
+    hint: '',
+    externalPracticeLink: 'https://github.com/'
+  });
 }
 
 export async function verifyCodeSolution(
@@ -253,5 +302,8 @@ export async function verifyCodeSolution(
     }
   });
 
-  return JSON.parse(response.text || '{"passed": false, "feedback": "Evaluation failed. Please try again."}');
+  return parseModelJson<{ passed: boolean; feedback: string }>(response.text, {
+    passed: false,
+    feedback: 'Evaluation failed. Please try again.'
+  });
 }

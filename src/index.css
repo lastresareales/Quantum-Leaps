@@ -17,6 +17,7 @@
 @layer base {
   body {
     @apply bg-bg-darkest text-text-primary font-sans antialiased;
+    min-height: 100dvh;
   }
 }
 
@@ -24,7 +25,8 @@
   .app-container-grid {
     display: grid;
     grid-template-columns: 260px 1fr 300px;
-    height: 100vh;
+    min-height: 100dvh;
+    height: auto;
   }
   
   .sidebar {
@@ -90,5 +92,80 @@
   
   .cal-slot-active {
     @apply bg-accent-glow text-accent-blue border-l border-accent-blue font-bold;
+  }
+
+  @media (max-width: 1024px) {
+    .app-container-grid {
+      grid-template-columns: 220px 1fr;
+      grid-template-areas:
+        "sidebar main"
+        "sidebar ai";
+    }
+
+    .sidebar {
+      grid-area: sidebar;
+    }
+
+    .main-content {
+      grid-area: main;
+      @apply p-6;
+    }
+
+    .ai-panel {
+      grid-area: ai;
+      @apply p-6;
+    }
+  }
+
+  @media (max-width: 768px) {
+    .app-container-grid {
+      grid-template-columns: 1fr;
+      grid-template-areas:
+        "sidebar"
+        "main"
+        "ai";
+    }
+
+    .sidebar,
+    .main-content,
+    .ai-panel {
+      min-width: 0;
+    }
+
+    .sidebar,
+    .ai-panel {
+      border-left: 0;
+      border-right: 0;
+      border-top: 1px solid var(--color-border-color);
+    }
+
+    .sidebar {
+      @apply p-4;
+    }
+
+    .main-content,
+    .ai-panel {
+      @apply p-4;
+    }
+
+    .card {
+      @apply p-4;
+    }
+
+    .btn-primary {
+      @apply text-xs px-4 py-2.5;
+    }
+
+    .ai-bubble {
+      @apply p-3 text-[12px];
+    }
+
+    .nav-item {
+      @apply py-2 text-[12px];
+    }
+
+    .logo {
+      @apply text-xl tracking-[0.2em];
+    }
   }
 }

@@ -5,8 +5,8 @@ import firebaseConfig from '../../firebase-applet-config.json';
 
 // Initialize Firebase SDK
 const app = initializeApp(firebaseConfig);
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
-export const auth = getAuth();
+export const db = getFirestore(app);
+export const auth = getAuth(app);
 
 /**
  * Validates connection to Firestore.
@@ -22,7 +22,9 @@ async function testConnection() {
   }
 }
 
-testConnection();
+if (typeof import.meta !== 'undefined' && import.meta.env?.DEV) {
+  void testConnection();
+}
 
 export enum OperationType {
   CREATE = 'create',
@@ -52,10 +54,19 @@ export interface FirestoreErrorInfo {
   }
 }
 
+interface FirestoreErrorOptions {
+  rethrow?: boolean;
+}
+
 /**
  * Centralized Firestore error handling for diagnostics.
  */
-export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+export function handleFirestoreError(
+  error: unknown,
+  operationType: OperationType,
+  path: string | null,
+  options: FirestoreErrorOptions = {}
+) {
   const errInfo: FirestoreErrorInfo = {
     error: error instanceof Error ? error.message : String(error),
     authInfo: {
@@ -75,5 +86,10 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
     path
   };
   console.error('Firestore Error: ', JSON.stringify(errInfo));
-  throw new Error(JSON.stringify(errInfo));
+
+  if (options.rethrow) {
+    throw new Error(JSON.stringify(errInfo));
+  }
+
+  return errInfo;
 }
