@@ -1,7 +1,7 @@
 import { GoogleGenAI, Type } from "@google/genai";
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
-const model = "gemini-3.1-pro-preview";
+const model = "gemini-2.5-flash";
 
 function parseModelJson<T>(rawText: string | undefined, fallback: T): T {
   if (!rawText) return fallback;

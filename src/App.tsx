@@ -18,7 +18,8 @@ import {
   serverTimestamp,
   updateDoc,
   doc,
-  deleteDoc
+  deleteDoc,
+  increment
 } from 'firebase/firestore';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -31,6 +32,7 @@ import {
   CheckCircle2, 
   Clock, 
   ChevronRight,
+  ChevronLeft,
   MessageSquare,
   BarChart3,
   Loader2,
@@ -72,6 +74,15 @@ interface Goal {
   createdAt: any;
   currentPhase?: number;
   quizPassedForPhase?: number;
+  deadline?: string;
+  weeklyMinutes?: number;
+  pace?: 'steady' | 'aggressive' | 'maintenance';
+  skillLevel?: 'beginner' | 'intermediate' | 'advanced';
+  motivation?: string;
+  constraints?: string;
+  preferredWindow?: string;
+  energyWindow?: string;
+  learningStyle?: string;
 }
 
 interface MicroStep {
@@ -83,6 +94,13 @@ interface MicroStep {
   difficulty: number;
   status: 'pending' | 'in-progress' | 'completed' | 'skipped';
   orderIndex: number;
+  completedAt?: any;
+  evidenceNotes?: string;
+  evidenceUrl?: string;
+  confidence?: number;
+  feedback?: 'too-hard' | 'too-easy' | 'irrelevant' | 'on-track';
+  attemptCount?: number;
+  completionProof?: string;
 }
 
 interface ChatMessage {
@@ -91,6 +109,91 @@ interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
   timestamp: any;
+}
+
+const paceLabels: Record<string, string> = {
+  steady: 'Steady',
+  aggressive: 'Aggressive',
+  maintenance: 'Maintenance'
+};
+
+function formatMinutes(totalMinutes: number) {
+  if (!Number.isFinite(totalMinutes) || totalMinutes <= 0) return '0m';
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
+}
+
+function coerceDate(value: any): Date | null {
+  if (!value) return null;
+  if (typeof value.toDate === 'function') return value.toDate();
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function daysUntil(dateString?: string) {
+  if (!dateString) return null;
+  const target = new Date(`${dateString}T23:59:59`);
+  if (Number.isNaN(target.getTime())) return null;
+  return Math.ceil((target.getTime() - Date.now()) / 86_400_000);
+}
+
+function buildScheduleSlots(goal: Goal, steps: MicroStep[]) {
+  const pendingSteps = steps.filter(step => step.status !== 'completed');
+  const nextStep = pendingSteps[0];
+  const windowLabel = goal.preferredWindow || goal.energyWindow || '12:45';
+  const weeklyBudget = goal.weeklyMinutes || 150;
+  const stepLength = nextStep?.durationMinutes || 20;
+  const sessions = Math.max(1, Math.floor(weeklyBudget / stepLength));
+
+  return [
+    { label: windowLabel, detail: nextStep ? nextStep.title : 'Review progress', active: true },
+    { label: 'Weekly load', detail: `${sessions} focused sessions`, active: false },
+    { label: 'Recovery slot', detail: goal.pace === 'aggressive' ? 'Add buffer' : 'Optional review', active: false },
+    { label: 'Energy mode', detail: goal.energyWindow || 'Not calibrated', active: false }
+  ];
+}
+
+function buildStepChecklist(step: MicroStep) {
+  return [
+    `Define the smallest useful output for "${step.title}".`,
+    `Work for ${step.durationMinutes || 20} minutes without expanding scope.`,
+    'Capture proof before marking the step complete.'
+  ];
+}
+
+function buildSuccessCriteria(step: MicroStep) {
+  return [
+    'There is a visible artifact, note, code output, link, or decision.',
+    `The artifact directly supports: ${step.description}`,
+    'You can explain the result in one sentence.'
+  ];
+}
+
+function buildAdaptiveSignals(goal: Goal, steps: MicroStep[]) {
+  const completed = steps.filter(step => step.status === 'completed');
+  const skipped = steps.filter(step => step.status === 'skipped');
+  const confidenceAverage = completed.length
+    ? Math.round(completed.reduce((sum, step) => sum + (step.confidence || 3), 0) / completed.length)
+    : 0;
+  const hardFeedbackCount = steps.filter(step => step.feedback === 'too-hard').length;
+  const deadlineDays = daysUntil(goal.deadline);
+
+  const signals = [];
+  if (hardFeedbackCount >= 2 || confidenceAverage === 1) {
+    signals.push('Reduce next phase difficulty and add more practice reps.');
+  }
+  if (skipped.length > 0) {
+    signals.push('Rebuild skipped work into smaller recovery steps.');
+  }
+  if (deadlineDays !== null && deadlineDays < 14 && (goal.weeklyMinutes || 0) < 180) {
+    signals.push('Deadline pressure is high; increase weekly capacity or narrow scope.');
+  }
+  if (completed.length >= 8 && hardFeedbackCount === 0 && confidenceAverage >= 4) {
+    signals.push('User is ready for denser, more ambitious next-phase work.');
+  }
+
+  return signals.length ? signals : ['Current plan is stable. Keep the next phase at this difficulty.'];
 }
 
 // --- Components ---
@@ -181,6 +284,14 @@ export default function App() {
   return (
     <ErrorBoundary>
       <AuthContext.Provider value={{ user, loading, login, logout }}>
+        <div className="md:hidden fixed inset-0 z-[9999] bg-bg-darkest flex flex-col items-center justify-center p-8 text-center">
+          <div className="text-accent-blue text-5xl mb-6">⚡</div>
+          <div className="text-xs tracking-[4px] uppercase text-accent-blue mb-4">Quantum Leaps</div>
+          <h2 className="text-xl font-light text-text-primary mb-3">Desktop Required</h2>
+          <p className="text-text-secondary text-sm leading-relaxed max-w-xs">
+            This app is optimized for larger screens. Please open it on a desktop or laptop for the full experience.
+          </p>
+        </div>
         {user ? <Dashboard /> : <LandingPage />}
       </AuthContext.Provider>
     </ErrorBoundary>
@@ -258,7 +369,16 @@ function Dashboard() {
   const [goals, setGoals] = useState<Goal[]>([]);
   const [selectedGoalId, setSelectedGoalId] = useState<string | null>(null);
   const [isCreating, setIsCreating] = useState(false);
+  const [leftOpen, setLeftOpen] = useState(true);
+  const [rightOpen, setRightOpen] = useState(true);
   const [newGoalTitle, setNewGoalTitle] = useState('');
+  const [newGoalDeadline, setNewGoalDeadline] = useState('');
+  const [newGoalWeeklyMinutes, setNewGoalWeeklyMinutes] = useState(150);
+  const [newGoalSkillLevel, setNewGoalSkillLevel] = useState<Goal['skillLevel']>('beginner');
+  const [newGoalPace, setNewGoalPace] = useState<Goal['pace']>('steady');
+  const [newGoalPreferredWindow, setNewGoalPreferredWindow] = useState('12:45');
+  const [newGoalMotivation, setNewGoalMotivation] = useState('');
+  const [newGoalConstraints, setNewGoalConstraints] = useState('');
 
   useEffect(() => {
     if (!user) return;
@@ -268,6 +388,16 @@ function Dashboard() {
     }, (err) => handleFirestoreError(err, OperationType.LIST, 'goals'));
   }, [user]);
 
+  useEffect(() => {
+    if (selectedGoalId) {
+      setLeftOpen(false);
+      setRightOpen(false);
+    } else {
+      setLeftOpen(true);
+      setRightOpen(true);
+    }
+  }, [selectedGoalId]);
+
   const handleCreateGoal = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newGoalTitle.trim() || !user) return;
@@ -276,12 +406,27 @@ function Dashboard() {
       const docRef = await addDoc(collection(db, 'goals'), {
         userId: user.uid,
         title: newGoalTitle,
+        deadline: newGoalDeadline || null,
+        weeklyMinutes: newGoalWeeklyMinutes,
+        skillLevel: newGoalSkillLevel,
+        pace: newGoalPace,
+        preferredWindow: newGoalPreferredWindow,
+        energyWindow: newGoalPreferredWindow,
+        motivation: newGoalMotivation,
+        constraints: newGoalConstraints,
         status: 'analyzing',
         createdAt: serverTimestamp(),
         currentPhase: 1,
         quizPassedForPhase: 0
       });
       setNewGoalTitle('');
+      setNewGoalDeadline('');
+      setNewGoalWeeklyMinutes(150);
+      setNewGoalSkillLevel('beginner');
+      setNewGoalPace('steady');
+      setNewGoalPreferredWindow('12:45');
+      setNewGoalMotivation('');
+      setNewGoalConstraints('');
       setIsCreating(false);
       setSelectedGoalId(docRef.id);
     } catch (err) {
@@ -290,70 +435,120 @@ function Dashboard() {
   };
 
   const selectedGoal = goals.find(g => g.id === selectedGoalId);
+  const activeGoalCount = goals.filter(goal => goal.status === 'active' || goal.status === 'analyzing').length;
+  const completedGoalCount = goals.filter(goal => goal.status === 'completed').length;
+  const dueSoonCount = goals.filter(goal => {
+    const remaining = daysUntil(goal.deadline);
+    return remaining !== null && remaining >= 0 && remaining <= 14;
+  }).length;
+  const totalWeeklyCapacity = goals.reduce((sum, goal) => sum + (goal.weeklyMinutes || 0), 0);
 
   return (
+<<<<<<< HEAD
     <div className="app-container-grid bg-bg-darkest overflow-x-hidden md:overflow-hidden">
       {/* Sidebar */}
       <aside className="sidebar">
         <div className="logo mb-12">Quantum Leaps</div>
+=======
+    <div
+      className="bg-bg-darkest overflow-hidden"
+      style={{
+        display: 'grid',
+        gridTemplateColumns: `${leftOpen ? '260px' : '24px'} 1fr ${rightOpen ? '300px' : '24px'}`,
+        height: '100vh',
+        transition: 'grid-template-columns 0.25s ease',
+      }}
+    >
+      {/* Left Sidebar */}
+      {leftOpen ? (
+        <aside className="sidebar relative overflow-hidden">
+          <div className="logo mb-12 pr-6">Quantum Leaps</div>
+>>>>>>> refs/remotes/origin/main
 
-        <nav className="flex-1">
-          <button 
-            onClick={() => setSelectedGoalId(null)}
-            className={cn("nav-item text-left w-full", !selectedGoalId && "nav-item-active")}
-          >
-            {!selectedGoalId && <span className="nav-dot" />}
-            <span>Active Goals</span>
-          </button>
-          
-          <div className="mt-8 mb-4">
-            <span className="text-[10px] text-text-secondary uppercase tracking-[2px] opacity-50">Operational Pipeline</span>
-          </div>
-
-          {goals.map(goal => (
-            <button 
-              key={goal.id}
-              onClick={() => setSelectedGoalId(goal.id)}
-              className={cn("nav-item text-left w-full pl-2 lowercase", selectedGoalId === goal.id && "nav-item-active")}
+          <nav className="flex-1">
+            <button
+              onClick={() => setSelectedGoalId(null)}
+              className={cn("nav-item text-left w-full", !selectedGoalId && "nav-item-active")}
             >
-              {selectedGoalId === goal.id && <span className="nav-dot" />}
-              <span className="truncate">{goal.title}</span>
+              {!selectedGoalId && <span className="nav-dot" />}
+              <span>Active Goals</span>
             </button>
-          ))}
 
-          <button 
-            onClick={() => setIsCreating(true)}
-            className="nav-item text-left w-full pl-2 opacity-60 hover:opacity-100"
-          >
-            <Plus className="w-3 h-3 mr-2" />
-            <span>Add Initiative</span>
-          </button>
-        </nav>
-
-        <div className="mt-auto pt-6 border-t border-border-color">
-          <div className="stat-row">
-            <div>
-              <div className="stat-desc">System Efficiency</div>
-              <div className="stat-value text-accent-blue tracking-tighter">94.2%</div>
+            <div className="mt-8 mb-4">
+              <span className="text-[10px] text-text-secondary uppercase tracking-[2px] opacity-50">Operational Pipeline</span>
             </div>
-          </div>
-          <div className="h-[2px] w-full bg-white/10 mt-2">
-            <div className="h-full bg-accent-blue shadow-[0_0_8px_var(--color-accent-blue)] w-[94.2%]" />
-          </div>
-          
-          <div className="mt-8 flex items-center justify-between">
-            <div className="flex items-center space-x-3">
-              <img src={user?.photoURL || ''} className="w-6 h-6 rounded-full border border-border-color" referrerPolicy="no-referrer" />
-              <div className="flex-1 min-w-0">
-                <p className="text-text-primary text-[10px] font-medium truncate">{user?.displayName?.split(' ')[0]}</p>
+
+            {goals.map(goal => (
+              <button
+                key={goal.id}
+                onClick={() => setSelectedGoalId(goal.id)}
+                className={cn("nav-item text-left w-full pl-2 lowercase", selectedGoalId === goal.id && "nav-item-active")}
+              >
+                {selectedGoalId === goal.id && <span className="nav-dot" />}
+                <span className="truncate">{goal.title}</span>
+              </button>
+            ))}
+
+            <button
+              onClick={() => setIsCreating(true)}
+              className="nav-item text-left w-full pl-2 opacity-60 hover:opacity-100"
+            >
+              <Plus className="w-3 h-3 mr-2" />
+              <span>Add Initiative</span>
+            </button>
+          </nav>
+
+          <div className="mt-auto pt-6 border-t border-border-color">
+            <div className="stat-row">
+              <div>
+                <div className="stat-desc">Goals Completed</div>
+                <div className="stat-value text-accent-blue tracking-tighter">{goals.length ? Math.round((completedGoalCount / goals.length) * 100) : 0}%</div>
               </div>
             </div>
+<<<<<<< HEAD
             <button onClick={logout} className="text-text-secondary hover:text-red-400 transition-colors shrink-0">
               <LogOut className="w-3 h-3" />
             </button>
+=======
+            <div className="h-[2px] w-full bg-white/10 mt-2">
+              <div className="h-full bg-accent-blue shadow-[0_0_8px_var(--color-accent-blue)]" style={{ width: `${goals.length ? Math.round((completedGoalCount / goals.length) * 100) : 0}%` }} />
+            </div>
+
+            <div className="mt-8 flex items-center justify-between">
+              <div className="flex items-center space-x-3">
+                <img src={user?.photoURL || ''} className="w-6 h-6 rounded-full border border-border-color" referrerPolicy="no-referrer" />
+                <div className="flex-1 min-w-0">
+                  <p className="text-text-primary text-[10px] font-medium truncate">{user?.displayName?.split(' ')[0]}</p>
+                </div>
+              </div>
+              <button onClick={logout} className="text-text-secondary hover:text-red-400 transition-colors">
+                <LogOut className="w-3 h-3" />
+              </button>
+            </div>
+>>>>>>> refs/remotes/origin/main
           </div>
-        </div>
-      </aside>
+
+          {/* Collapse tab on right edge */}
+          <button
+            onClick={() => setLeftOpen(false)}
+            className="absolute top-1/2 -translate-y-1/2 -right-px w-5 h-10 bg-bg-sidebar border border-border-color rounded-r-md flex items-center justify-center text-text-secondary hover:text-accent-blue hover:border-accent-blue/40 transition-all z-20"
+            title="Collapse sidebar"
+          >
+            <ChevronLeft className="w-3 h-3" />
+          </button>
+        </aside>
+      ) : (
+        /* Collapsed left — pull tab only */
+        <aside className="bg-bg-sidebar border-r border-border-color relative flex items-center justify-center">
+          <button
+            onClick={() => setLeftOpen(true)}
+            className="absolute top-1/2 -translate-y-1/2 -right-px w-5 h-10 bg-bg-sidebar border border-border-color rounded-r-md flex items-center justify-center text-text-secondary hover:text-accent-blue hover:border-accent-blue/40 transition-all z-20"
+            title="Expand sidebar"
+          >
+            <ChevronRight className="w-3 h-3" />
+          </button>
+        </aside>
+      )}
 
       {/* Dynamic Content Columns */}
       <AnimatePresence mode="wait">
@@ -368,17 +563,27 @@ function Dashboard() {
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div className="card">
                   <span className="card-label">Active Initiatives</span>
-                  <div className="text-4xl font-light text-text-primary mb-2 tracking-tight">{goals.length}</div>
+                  <div className="text-4xl font-light text-text-primary mb-2 tracking-tight">{activeGoalCount}</div>
                   <div className="progress-bar w-full bg-white/5 h-[1px]">
-                     <div className="bg-accent-blue h-full w-[60%] shadow-[0_0_5px_var(--color-accent-blue)]" />
+                     <div className="bg-accent-blue h-full shadow-[0_0_5px_var(--color-accent-blue)]" style={{ width: `${Math.min(100, activeGoalCount * 20)}%` }} />
                   </div>
                 </div>
                 <div className="card">
-                  <span className="card-label">Micro-Allocations Logged</span>
-                  <div className="text-4xl font-light text-text-primary mb-2 tracking-tight">1,204</div>
+                  <span className="card-label">Weekly Capacity</span>
+                  <div className="text-4xl font-light text-text-primary mb-2 tracking-tight">{formatMinutes(totalWeeklyCapacity)}</div>
                   <div className="progress-bar w-full bg-white/5 h-[1px]">
-                     <div className="bg-accent-blue h-full w-[42%] shadow-[0_0_5px_var(--color-accent-blue)]" />
+                     <div className="bg-accent-blue h-full shadow-[0_0_5px_var(--color-accent-blue)]" style={{ width: `${Math.min(100, (totalWeeklyCapacity / 600) * 100)}%` }} />
                   </div>
+                </div>
+                <div className="card">
+                  <span className="card-label">Deadline Pressure</span>
+                  <div className="text-4xl font-light text-text-primary mb-2 tracking-tight">{dueSoonCount}</div>
+                  <p className="text-[11px] text-text-secondary">Goals due in the next 14 days.</p>
+                </div>
+                <div className="card">
+                  <span className="card-label">Closed Loops</span>
+                  <div className="text-4xl font-light text-text-primary mb-2 tracking-tight">{completedGoalCount}</div>
+                  <p className="text-[11px] text-text-secondary">Completed strategic initiatives.</p>
                 </div>
               </div>
 
@@ -394,29 +599,50 @@ function Dashboard() {
                 </div>
               </div>
             </main>
-            <aside className="ai-panel">
-               <div className="ai-status-box font-mono">Quantum Engine Standby</div>
-               <div className="ai-bubble">
+            {rightOpen ? (
+              <aside className="ai-panel relative overflow-hidden">
+                {/* Collapse tab on left edge */}
+                <button
+                  onClick={() => setRightOpen(false)}
+                  className="absolute top-1/2 -translate-y-1/2 -left-px w-5 h-10 bg-bg-sidebar border border-border-color rounded-l-md flex items-center justify-center text-text-secondary hover:text-accent-blue hover:border-accent-blue/40 transition-all z-20"
+                  title="Collapse panel"
+                >
+                  <ChevronRight className="w-3 h-3" />
+                </button>
+                <div className="ai-status-box font-mono">Quantum Engine Standby</div>
+                <div className="ai-bubble">
                   Welcome to Quantum Leaps. Select an existing goal or initiate a new strategic breakdown to begin microscopic interval generation.
-               </div>
-               <div className="mt-8">
+                </div>
+                <div className="mt-8">
                   <span className="card-label">System Integrity</span>
                   <div className="space-y-4">
-                     <div className="flex justify-between text-[10px] uppercase font-mono tracking-widest text-text-secondary">
-                        <span>Database Sync</span>
-                        <span className="text-accent-blue">Active</span>
-                     </div>
-                     <div className="flex justify-between text-[10px] uppercase font-mono tracking-widest text-text-secondary">
-                        <span>AI Inference</span>
-                        <span className="text-accent-blue">Online</span>
-                     </div>
+                    <div className="flex justify-between text-[10px] uppercase font-mono tracking-widest text-text-secondary">
+                      <span>Database Sync</span>
+                      <span className="text-accent-blue">Active</span>
+                    </div>
+                    <div className="flex justify-between text-[10px] uppercase font-mono tracking-widest text-text-secondary">
+                      <span>AI Inference</span>
+                      <span className="text-accent-blue">Online</span>
+                    </div>
                   </div>
-               </div>
-            </aside>
+                </div>
+              </aside>
+            ) : (
+              /* Collapsed right — pull tab only */
+              <aside className="bg-bg-sidebar border-l border-border-color relative flex items-center justify-center">
+                <button
+                  onClick={() => setRightOpen(true)}
+                  className="absolute top-1/2 -translate-y-1/2 -left-px w-5 h-10 bg-bg-sidebar border border-border-color rounded-l-md flex items-center justify-center text-text-secondary hover:text-accent-blue hover:border-accent-blue/40 transition-all z-20"
+                  title="Expand panel"
+                >
+                  <ChevronLeft className="w-3 h-3" />
+                </button>
+              </aside>
+            )}
           </React.Fragment>
         ) : (
           <div key={selectedGoalId} className="contents">
-            <GoalDetailsLayout goal={selectedGoal!} onClose={() => setSelectedGoalId(null)} />
+            <GoalDetailsLayout goal={selectedGoal!} onClose={() => setSelectedGoalId(null)} rightOpen={rightOpen} setRightOpen={setRightOpen} />
           </div>
         )}
       </AnimatePresence>
@@ -433,15 +659,88 @@ function Dashboard() {
               <Plus className="w-5 h-5 text-accent-blue" />
               <span>New Strategic Initiative</span>
             </h3>
-            <form onSubmit={handleCreateGoal}>
+            <form onSubmit={handleCreateGoal} className="space-y-5">
               <input 
                 autoFocus
                 value={newGoalTitle}
                 onChange={(e) => setNewGoalTitle(e.target.value)}
                 placeholder="Ex. Financial Sovereignty"
-                className="w-full bg-transparent border-b border-border-color py-4 text-white placeholder:text-text-secondary/50 mb-10 focus:outline-none focus:border-accent-blue transition-colors text-lg"
+                className="w-full bg-transparent border-b border-border-color py-4 text-white placeholder:text-text-secondary/50 focus:outline-none focus:border-accent-blue transition-colors text-lg"
               />
-              <div className="flex justify-end space-x-6 items-center">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <label className="space-y-2">
+                  <span className="card-label mb-0">Target Date</span>
+                  <input
+                    type="date"
+                    value={newGoalDeadline}
+                    onChange={(e) => setNewGoalDeadline(e.target.value)}
+                    className="w-full bg-white/5 border border-border-color rounded p-3 text-sm text-text-primary focus:outline-none focus:border-accent-blue"
+                  />
+                </label>
+                <label className="space-y-2">
+                  <span className="card-label mb-0">Weekly Capacity</span>
+                  <input
+                    type="number"
+                    min={30}
+                    step={15}
+                    value={newGoalWeeklyMinutes}
+                    onChange={(e) => setNewGoalWeeklyMinutes(Number(e.target.value))}
+                    className="w-full bg-white/5 border border-border-color rounded p-3 text-sm text-text-primary focus:outline-none focus:border-accent-blue"
+                  />
+                </label>
+                <label className="space-y-2">
+                  <span className="card-label mb-0">Skill Level</span>
+                  <select
+                    value={newGoalSkillLevel}
+                    onChange={(e) => setNewGoalSkillLevel(e.target.value as Goal['skillLevel'])}
+                    className="w-full bg-bg-card border border-border-color rounded p-3 text-sm text-text-primary focus:outline-none focus:border-accent-blue"
+                  >
+                    <option value="beginner">Beginner</option>
+                    <option value="intermediate">Intermediate</option>
+                    <option value="advanced">Advanced</option>
+                  </select>
+                </label>
+                <label className="space-y-2">
+                  <span className="card-label mb-0">Pace</span>
+                  <select
+                    value={newGoalPace}
+                    onChange={(e) => setNewGoalPace(e.target.value as Goal['pace'])}
+                    className="w-full bg-bg-card border border-border-color rounded p-3 text-sm text-text-primary focus:outline-none focus:border-accent-blue"
+                  >
+                    <option value="steady">Steady</option>
+                    <option value="aggressive">Aggressive</option>
+                    <option value="maintenance">Maintenance</option>
+                  </select>
+                </label>
+              </div>
+              <label className="space-y-2 block">
+                <span className="card-label mb-0">Preferred Work Window</span>
+                <input
+                  value={newGoalPreferredWindow}
+                  onChange={(e) => setNewGoalPreferredWindow(e.target.value)}
+                  placeholder="Ex. 07:30, lunch, evenings"
+                  className="w-full bg-white/5 border border-border-color rounded p-3 text-sm text-text-primary focus:outline-none focus:border-accent-blue"
+                />
+              </label>
+              <label className="space-y-2 block">
+                <span className="card-label mb-0">Motivation</span>
+                <textarea
+                  value={newGoalMotivation}
+                  onChange={(e) => setNewGoalMotivation(e.target.value)}
+                  placeholder="Why this matters now"
+                  className="w-full bg-white/5 border border-border-color rounded p-3 text-sm text-text-primary focus:outline-none focus:border-accent-blue min-h-20 resize-none"
+                />
+              </label>
+              <label className="space-y-2 block">
+                <span className="card-label mb-0">Constraints</span>
+                <textarea
+                  value={newGoalConstraints}
+                  onChange={(e) => setNewGoalConstraints(e.target.value)}
+                  placeholder="Tools, budget, schedule, environment, blockers"
+                  className="w-full bg-white/5 border border-border-color rounded p-3 text-sm text-text-primary focus:outline-none focus:border-accent-blue min-h-20 resize-none"
+                />
+              </label>
+              <div className="flex justify-end space-x-6 items-center pt-3">
                 <button type="button" onClick={() => setIsCreating(false)} className="btn-ghost">Close</button>
                 <button type="submit" className="btn-primary">Initialize</button>
               </div>
@@ -453,7 +752,7 @@ function Dashboard() {
   );
 }// --- Goal Details Layout (3-Column when selected) ---
 
-function GoalDetailsLayout({ goal, onClose }: { goal: Goal, onClose: () => void }) {
+function GoalDetailsLayout({ goal, onClose, rightOpen, setRightOpen }: { goal: Goal, onClose: () => void, rightOpen: boolean, setRightOpen: React.Dispatch<React.SetStateAction<boolean>> }) {
   const { user } = useContext(AuthContext);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [steps, setSteps] = useState<MicroStep[]>([]);
@@ -462,6 +761,12 @@ function GoalDetailsLayout({ goal, onClose }: { goal: Goal, onClose: () => void 
   const [isGenerating, setIsGenerating] = useState(false);
   const [selectedStep, setSelectedStep] = useState<MicroStep | null>(null);
   const [terminalStep, setTerminalStep] = useState<MicroStep | null>(null);
+  const [evidenceNotes, setEvidenceNotes] = useState('');
+  const [evidenceUrl, setEvidenceUrl] = useState('');
+  const [confidence, setConfidence] = useState(3);
+  const [stepFeedback, setStepFeedback] = useState<MicroStep['feedback']>('on-track');
+
+  const [decompositionError, setDecompositionError] = useState<string | null>(null);
 
   // Quiz/Exam States
   const [examQuestions, setExamQuestions] = useState<any[] | null>(null);
@@ -503,6 +808,14 @@ function GoalDetailsLayout({ goal, onClose }: { goal: Goal, onClose: () => void 
     };
   }, [goal.id, user, goal.status]);
 
+  useEffect(() => {
+    if (!selectedStep) return;
+    setEvidenceNotes(selectedStep.evidenceNotes || selectedStep.completionProof || '');
+    setEvidenceUrl(selectedStep.evidenceUrl || '');
+    setConfidence(selectedStep.confidence || 3);
+    setStepFeedback(selectedStep.feedback || 'on-track');
+  }, [selectedStep]);
+
   const triggerAI = async (goalTitle: string, history: ChatMessage[]) => {
     setIsTyping(true);
     try {
@@ -542,9 +855,22 @@ function GoalDetailsLayout({ goal, onClose }: { goal: Goal, onClose: () => void 
 
   const handleDecompose = async () => {
     setIsGenerating(true);
+    setDecompositionError(null);
     try {
-      const historyText = messages.map(m => `${m.role}: ${m.content}`).join('\n');
+      const goalProfile = [
+        `Deadline: ${goal.deadline || 'unset'}`,
+        `Weekly capacity: ${goal.weeklyMinutes || 150} minutes`,
+        `Skill level: ${goal.skillLevel || 'beginner'}`,
+        `Pace: ${goal.pace || 'steady'}`,
+        `Preferred work window: ${goal.preferredWindow || 'unset'}`,
+        `Motivation: ${goal.motivation || 'unset'}`,
+        `Constraints: ${goal.constraints || 'none'}`
+      ].join('\n');
+      const historyText = `${goalProfile}\n\nConversation:\n${messages.map(m => `${m.role}: ${m.content}`).join('\n')}`;
       const result = await generateMicroSteps(goal.title, historyText);
+      if (!result.steps || result.steps.length === 0) {
+        throw new Error('AI returned no steps. Please try again.');
+      }
       for (let i = 0; i < result.steps.length; i++) {
         const step = result.steps[i];
         await addDoc(collection(db, 'goals', goal.id, 'steps'), {
@@ -565,6 +891,7 @@ function GoalDetailsLayout({ goal, onClose }: { goal: Goal, onClose: () => void 
       });
     } catch (error) {
       console.error('Decomposition error:', error);
+      setDecompositionError(error instanceof Error ? error.message : 'Decomposition failed. Please try again.');
     } finally {
       setIsGenerating(false);
     }
@@ -573,7 +900,17 @@ function GoalDetailsLayout({ goal, onClose }: { goal: Goal, onClose: () => void 
   const handleDecomposeNextPhase = async () => {
     setIsGenerating(true);
     try {
-      const historyText = messages.map(m => `${m.role}: ${m.content}`).join('\n');
+      const adaptiveContext = [
+        `Deadline: ${goal.deadline || 'unset'}`,
+        `Weekly capacity: ${goal.weeklyMinutes || 150} minutes`,
+        `Skill level: ${goal.skillLevel || 'beginner'}`,
+        `Pace: ${goal.pace || 'steady'}`,
+        `Constraints: ${goal.constraints || 'none'}`,
+        `Adaptive signals: ${buildAdaptiveSignals(goal, steps).join(' ')}`,
+        `Completed proof coverage: ${proofCoverage}%`,
+        `Average confidence: ${confidenceAverage || 'N/A'}`
+      ].join('\n');
+      const historyText = `${adaptiveContext}\n\nConversation:\n${messages.map(m => `${m.role}: ${m.content}`).join('\n')}`;
       const currentCount = steps.length;
       const currentPhaseIndex = goal.currentPhase || 1;
       const nextPhaseIndex = currentPhaseIndex + 1;
@@ -608,6 +945,7 @@ function GoalDetailsLayout({ goal, onClose }: { goal: Goal, onClose: () => void 
       });
     } catch (error) {
       console.error('Next phase generation error:', error);
+      setDecompositionError(error instanceof Error ? error.message : 'Phase generation failed. Please try again.');
     } finally {
       setIsGenerating(false);
     }
@@ -682,6 +1020,24 @@ function GoalDetailsLayout({ goal, onClose }: { goal: Goal, onClose: () => void 
     }
   };
 
+  const saveStepEvidence = async (markComplete = false) => {
+    if (!selectedStep) return;
+    try {
+      await updateDoc(doc(db, 'goals', goal.id, 'steps', selectedStep.id), {
+        evidenceNotes,
+        evidenceUrl,
+        completionProof: evidenceNotes,
+        confidence,
+        feedback: stepFeedback,
+        status: markComplete ? 'completed' : selectedStep.status,
+        completedAt: markComplete ? serverTimestamp() : (selectedStep.completedAt || null)
+      });
+      setSelectedStep(null);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, 'steps');
+    }
+  };
+
   const selectAnswer = (questionIdx: number, optionIdx: number) => {
     if (selectedAnswers[questionIdx] !== undefined) return;
     setSelectedAnswers(prev => ({
@@ -714,6 +1070,20 @@ function GoalDetailsLayout({ goal, onClose }: { goal: Goal, onClose: () => void 
     100,
     Math.round(((currentPhaseIndex - 1) * 5) + ((activeCompletedCount / (activeStepsCount || 10)) * 5))
   );
+  const completedSteps = steps.filter(step => step.status === 'completed');
+  const pendingSteps = steps.filter(step => step.status !== 'completed');
+  const completedMinutes = completedSteps.reduce((sum, step) => sum + (step.durationMinutes || 0), 0);
+  const remainingMinutes = pendingSteps.reduce((sum, step) => sum + (step.durationMinutes || 0), 0);
+  const proofCount = completedSteps.filter(step => step.evidenceNotes || step.evidenceUrl || step.completionProof).length;
+  const proofCoverage = completedSteps.length ? Math.round((proofCount / completedSteps.length) * 100) : 0;
+  const confidenceAverage = completedSteps.length
+    ? Math.round(completedSteps.reduce((sum, step) => sum + (step.confidence || 3), 0) / completedSteps.length)
+    : 0;
+  const deadlineRemaining = daysUntil(goal.deadline);
+  const adaptiveSignals = buildAdaptiveSignals(goal, steps);
+  const scheduleSlots = buildScheduleSlots(goal, steps);
+  const weeklyCapacity = goal.weeklyMinutes || 150;
+  const weeksToFinishVisiblePlan = weeklyCapacity ? Math.ceil(remainingMinutes / weeklyCapacity) : null;
 
   // Show immersive sandbox terminal if terminal practice is active
   if (terminalStep) {
@@ -722,8 +1092,22 @@ function GoalDetailsLayout({ goal, onClose }: { goal: Goal, onClose: () => void 
         goal={goal}
         step={terminalStep}
         onClose={() => setTerminalStep(null)}
-        onCompleteStep={async () => {
-          await toggleStep(terminalStep.id, 'pending');
+        onVerificationAttempt={async (passed, feedback) => {
+          await updateDoc(doc(db, 'goals', goal.id, 'steps', terminalStep.id), {
+            attemptCount: increment(1),
+            feedback: passed ? 'on-track' : 'too-hard',
+            completionProof: feedback
+          });
+        }}
+        onCompleteStep={async (proof) => {
+          await updateDoc(doc(db, 'goals', goal.id, 'steps', terminalStep.id), {
+            status: 'completed',
+            completedAt: serverTimestamp(),
+            completionProof: proof?.feedback || 'Sandbox verification passed.',
+            evidenceNotes: proof?.feedback || 'Sandbox verification passed.',
+            confidence: 5,
+            feedback: 'on-track'
+          });
           setTerminalStep(null);
         }}
       />
@@ -768,7 +1152,7 @@ function GoalDetailsLayout({ goal, onClose }: { goal: Goal, onClose: () => void 
             <p className="text-[10px] uppercase tracking-widest text-text-secondary mb-2">Goal Tracking Profile: High Sophistication Mode</p>
             <h1 className="text-3xl sm:text-4xl font-light text-text-primary tracking-tight leading-tight">{goal.title}</h1>
             <div className="font-mono text-[11px] text-text-secondary opacity-60 uppercase mt-2 tracking-widest">
-              ID: {goal.id.slice(0, 8)} • PHASE {currentPhaseIndex} of 20 • {steps.length} TOTAL QUANTUM STEPS
+              ID: {goal.id.slice(0, 8)} • PHASE {currentPhaseIndex} of 20 • {steps.length} TOTAL STEPS • {paceLabels[goal.pace || 'steady']} PACE
             </div>
           </div>
           <button onClick={onClose} className="p-2 text-text-secondary hover:text-accent-blue transition-colors">
@@ -914,122 +1298,177 @@ function GoalDetailsLayout({ goal, onClose }: { goal: Goal, onClose: () => void 
                 <span className="text-text-primary">{currentPhaseIndex} / 20 ({overallProgressionPercent}%)</span>
               </div>
               <div className="flex justify-between items-center text-[10px] font-mono text-text-secondary uppercase">
-                <span>Phase Complete Threshold</span>
-                <span className="text-emerald-400">5% per Phase</span>
+                <span>Evidence Coverage</span>
+                <span className={proofCoverage >= 70 ? "text-emerald-400" : "text-yellow-400"}>{proofCoverage}%</span>
               </div>
               <div className="flex justify-between items-center text-[10px] font-mono text-text-secondary uppercase">
-                <span>Calibration Target</span>
-                <span className="text-text-primary">Mastery Framework</span>
+                <span>Completed Work</span>
+                <span className="text-text-primary">{formatMinutes(completedMinutes)}</span>
               </div>
+              <div className="flex justify-between items-center text-[10px] font-mono text-text-secondary uppercase">
+                <span>Visible Plan ETA</span>
+                <span className="text-text-primary">{weeksToFinishVisiblePlan ? `${weeksToFinishVisiblePlan} week${weeksToFinishVisiblePlan === 1 ? '' : 's'}` : 'Set capacity'}</span>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mt-8">
+          <section className="card">
+            <span className="card-label">Adaptive Roadmap</span>
+            <div className="space-y-3">
+              {adaptiveSignals.map((signal, idx) => (
+                <div key={idx} className="text-xs text-text-secondary leading-relaxed border-l border-accent-blue/40 pl-3">
+                  {signal}
+                </div>
+              ))}
+            </div>
+          </section>
+          <section className="card">
+            <span className="card-label">Mastery Analytics</span>
+            <div className="space-y-3 text-[11px] font-mono uppercase text-text-secondary">
+              <div className="flex justify-between"><span>Confidence Avg</span><span className="text-text-primary">{confidenceAverage || 'N/A'} / 5</span></div>
+              <div className="flex justify-between"><span>Remaining Load</span><span className="text-text-primary">{formatMinutes(remainingMinutes)}</span></div>
+              <div className="flex justify-between"><span>Attempt Count</span><span className="text-text-primary">{steps.reduce((sum, step) => sum + (step.attemptCount || 0), 0)}</span></div>
+              <div className="flex justify-between"><span>Deadline</span><span className={deadlineRemaining !== null && deadlineRemaining < 14 ? "text-yellow-400" : "text-text-primary"}>{deadlineRemaining === null ? 'Unset' : `${deadlineRemaining} days`}</span></div>
+            </div>
+          </section>
+          <section className="card">
+            <span className="card-label">User Constraints</span>
+            <p className="text-xs text-text-secondary leading-relaxed mb-3">{goal.constraints || 'No constraints captured yet.'}</p>
+            <div className="text-[10px] font-mono uppercase text-text-secondary">
+              Skill: <span className="text-text-primary">{goal.skillLevel || 'Uncalibrated'}</span>
             </div>
           </section>
         </div>
       </main>
 
-      <aside className="ai-panel">
-        <div className="ai-status-box font-mono">
-           {isGenerating ? "Synthesizing intervals..." : (goal.status === 'analyzing' ? "AI Agent: Interrogating Pathway" : "AI Agent: Active Communication Mode")}
-        </div>
+      {rightOpen ? (
+        <aside className="ai-panel relative overflow-hidden">
+          {/* Collapse tab on left edge */}
+          <button
+            onClick={() => setRightOpen(false)}
+            className="absolute top-1/2 -translate-y-1/2 -left-px w-5 h-10 bg-bg-sidebar border border-border-color rounded-l-md flex items-center justify-center text-text-secondary hover:text-accent-blue hover:border-accent-blue/40 transition-all z-20"
+            title="Collapse panel"
+          >
+            <ChevronRight className="w-3 h-3" />
+          </button>
 
-        <div className="flex-1 overflow-y-auto space-y-4 mb-6 min-h-[250px]">
-          {messages.map(msg => (
-            <div key={msg.id} className={cn("ai-bubble", msg.role === 'assistant' && "ai-bubble-highlight")}>
-              {msg.content}
-            </div>
-          ))}
-          {isTyping && (
-             <div className="ai-bubble animate-pulse">Scanning goal requirements...</div>
-          )}
-          {isGenerating && (
-             <div className="ai-bubble animate-pulse">Generating steps via Quantum Leaps...</div>
-          )}
-        </div>
+          <div className="ai-status-box font-mono">
+            {isGenerating ? "Synthesizing intervals..." : (goal.status === 'analyzing' ? "AI Agent: Interrogating Pathway" : "AI Agent: Active Communication Mode")}
+          </div>
 
-        <div className="space-y-4">
-          <form onSubmit={handleSendMessage} className="space-y-3">
-            <input 
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              placeholder={goal.status === 'analyzing' ? "Response to diagnostic..." : "Message Quantum Coach..."}
-              className="w-full bg-transparent border border-border-color rounded p-3 text-sm text-text-primary focus:outline-none focus:border-accent-blue"
-              disabled={isGenerating || isTyping}
-            />
-            {goal.status === 'analyzing' && messages.length > 3 && (
-               <button 
-                 type="button" 
-                 onClick={handleDecompose}
-                 className="w-full py-3 border border-accent-blue text-accent-blue rounded text-[11px] uppercase tracking-widest hover:bg-accent-glow transition-all"
-                 disabled={isGenerating}
-               >
-                 Authorize Decomposition
-               </button>
+          <div className="flex-1 overflow-y-auto space-y-4 mb-6 min-h-[250px]">
+            {messages.map(msg => (
+              <div key={msg.id} className={cn("ai-bubble", msg.role === 'assistant' && "ai-bubble-highlight")}>
+                {msg.content}
+              </div>
+            ))}
+            {isTyping && <div className="ai-bubble animate-pulse">Scanning goal requirements...</div>}
+            {isGenerating && <div className="ai-bubble animate-pulse">Generating steps via Quantum Leaps...</div>}
+          </div>
+
+          <div className="space-y-4">
+            {decompositionError && (
+              <div className="p-3 bg-red-500/10 border border-red-500/40 rounded text-[11px] text-red-400 font-mono">
+                <span className="uppercase tracking-widest block mb-1">Error</span>
+                {decompositionError}
+                <button onClick={() => setDecompositionError(null)} className="block mt-2 underline opacity-60 hover:opacity-100">Dismiss</button>
+              </div>
             )}
-            {goal.status === 'active' && (() => {
-              const hasPassedQuiz = quizPassedForPhase >= currentPhaseIndex;
-              
-              if (!isPhaseFinished) {
-                return (
-                  <div className="p-3 bg-white/5 border border-white/10 rounded text-center">
-                    <div className="text-[10px] uppercase font-mono tracking-widest text-text-secondary opacity-60 mb-1">
-                      Current Phase {currentPhaseIndex} Status
-                    </div>
-                    <div className="text-xs text-text-primary">
-                      {activeCompletedCount} of {activeStepsCount || 10} Intervals Completed
-                    </div>
-                    <div className="h-1 bg-white/10 rounded-full mt-2 overflow-hidden">
-                      <div 
-                        className="bg-accent-blue h-full shadow-[0_0_8px_var(--color-accent-blue)] transition-all duration-500" 
-                        style={{ width: `${(activeCompletedCount / (activeStepsCount || 10)) * 100}%` }}
-                      />
-                    </div>
-                  </div>
-                );
-              }
-              
-              if (isPhaseFinished && !hasPassedQuiz) {
-                return (
-                  <button 
-                    type="button" 
-                    onClick={handleStartExam}
-                    className="w-full py-3 bg-accent-blue border border-accent-blue text-bg-darkest font-semibold rounded text-[11px] uppercase tracking-widest hover:shadow-[0_0_15px_rgba(56,189,248,0.4)] transition-all flex items-center justify-center space-x-2 animate-bounce"
-                    disabled={isGenerating || examLoading}
-                  >
-                    <span>Initiate Phase {currentPhaseIndex} Exam</span>
-                  </button>
-                );
-              }
-              
-              return (
-                <button 
-                  type="button" 
-                  onClick={handleDecomposeNextPhase}
-                  className="w-full py-3 bg-accent-blue/10 border border-accent-blue text-accent-blue rounded text-[11px] uppercase tracking-widest hover:bg-accent-blue/20 transition-all flex items-center justify-center space-x-2"
+            <form onSubmit={handleSendMessage} className="space-y-3">
+              <input
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                placeholder={goal.status === 'analyzing' ? "Response to diagnostic..." : "Message Quantum Coach..."}
+                className="w-full bg-transparent border border-border-color rounded p-3 text-sm text-text-primary focus:outline-none focus:border-accent-blue"
+                disabled={isGenerating || isTyping}
+              />
+              {goal.status === 'analyzing' && messages.length > 3 && (
+                <button
+                  type="button"
+                  onClick={handleDecompose}
+                  className="w-full py-3 border border-accent-blue text-accent-blue rounded text-[11px] uppercase tracking-widest hover:bg-accent-glow transition-all"
                   disabled={isGenerating}
                 >
-                  {isGenerating ? (
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  ) : (
-                    <Plus className="w-3.5 h-3.5" />
-                  )}
-                  <span>Calibrate Phase {currentPhaseIndex + 1} Protocols</span>
+                  Authorize Decomposition
                 </button>
-              );
-            })()}
-          </form>
+              )}
+              {goal.status === 'active' && (() => {
+                const hasPassedQuiz = quizPassedForPhase >= currentPhaseIndex;
+                if (!isPhaseFinished) {
+                  return (
+                    <div className="p-3 bg-white/5 border border-white/10 rounded text-center">
+                      <div className="text-[10px] uppercase font-mono tracking-widest text-text-secondary opacity-60 mb-1">
+                        Current Phase {currentPhaseIndex} Status
+                      </div>
+                      <div className="text-xs text-text-primary">
+                        {activeCompletedCount} of {activeStepsCount || 10} Intervals Completed
+                      </div>
+                      <div className="h-1 bg-white/10 rounded-full mt-2 overflow-hidden">
+                        <div
+                          className="bg-accent-blue h-full shadow-[0_0_8px_var(--color-accent-blue)] transition-all duration-500"
+                          style={{ width: `${(activeCompletedCount / (activeStepsCount || 10)) * 100}%` }}
+                        />
+                      </div>
+                    </div>
+                  );
+                }
+                if (isPhaseFinished && !hasPassedQuiz) {
+                  return (
+                    <button
+                      type="button"
+                      onClick={handleStartExam}
+                      className="w-full py-3 bg-accent-blue border border-accent-blue text-bg-darkest font-semibold rounded text-[11px] uppercase tracking-widest hover:shadow-[0_0_15px_rgba(56,189,248,0.4)] transition-all flex items-center justify-center space-x-2 animate-bounce"
+                      disabled={isGenerating || examLoading}
+                    >
+                      <span>Initiate Phase {currentPhaseIndex} Exam</span>
+                    </button>
+                  );
+                }
+                return (
+                  <button
+                    type="button"
+                    onClick={handleDecomposeNextPhase}
+                    className="w-full py-3 bg-accent-blue/10 border border-accent-blue text-accent-blue rounded text-[11px] uppercase tracking-widest hover:bg-accent-blue/20 transition-all flex items-center justify-center space-x-2"
+                    disabled={isGenerating}
+                  >
+                    {isGenerating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
+                    <span>Calibrate Phase {currentPhaseIndex + 1} Protocols</span>
+                  </button>
+                );
+              })()}
+            </form>
 
-          {goal.status === 'active' && (
-            <div className="pt-4 border-t border-border-color">
-              <span className="card-label mb-2">Diagnostic Calendar Map</span>
-              <div className="grid grid-cols-2 gap-2">
-                <div className="cal-slot hover:bg-white/5 transition-colors">08:15 — Pipeline</div>
-                <div className="cal-slot cal-slot-active text-white">12:45 — Optimal</div>
-                <div className="cal-slot hover:bg-white/5 transition-colors">14:00 — Busy Mode</div>
-                <div className="cal-slot hover:bg-white/5 transition-colors">19:30 — Post-Prime</div>
+            {goal.status === 'active' && (
+              <div className="pt-4 border-t border-border-color">
+                <span className="card-label mb-2">Schedule Intelligence</span>
+                <div className="grid grid-cols-2 gap-2">
+                  {scheduleSlots.map(slot => (
+                    <div key={`${slot.label}-${slot.detail}`} className={cn("cal-slot hover:bg-white/5 transition-colors", slot.active && "cal-slot-active text-white")}>
+                      {slot.label} — {slot.detail}
+                    </div>
+                  ))}
+                </div>
+                <p className="text-[10px] text-text-secondary/60 leading-relaxed mt-3">
+                  Based on {formatMinutes(weeklyCapacity)} weekly capacity and the next visible step.
+                </p>
               </div>
-            </div>
-          )}
-        </div>
-      </aside>
+            )}
+          </div>
+        </aside>
+      ) : (
+        /* Collapsed right — pull tab only */
+        <aside className="bg-bg-sidebar border-l border-border-color relative flex items-center justify-center">
+          <button
+            onClick={() => setRightOpen(true)}
+            className="absolute top-1/2 -translate-y-1/2 -left-px w-5 h-10 bg-bg-sidebar border border-border-color rounded-l-md flex items-center justify-center text-text-secondary hover:text-accent-blue hover:border-accent-blue/40 transition-all z-20"
+            title="Expand AI panel"
+          >
+            <ChevronLeft className="w-3 h-3" />
+          </button>
+        </aside>
+      )}
 
       {/* Step Detail Modal */}
       <AnimatePresence>
@@ -1039,7 +1478,11 @@ function GoalDetailsLayout({ goal, onClose }: { goal: Goal, onClose: () => void 
               initial={{ opacity: 0, scale: 0.95, y: 20 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: 20 }}
+<<<<<<< HEAD
               className="card max-w-2xl w-full p-6 sm:p-8 border-accent-blue/30 shadow-[0_0_40px_rgba(56,189,248,0.1)] relative"
+=======
+              className="card max-w-4xl w-full p-8 border-accent-blue/30 shadow-[0_0_40px_rgba(56,189,248,0.1)] relative max-h-[90vh] overflow-y-auto"
+>>>>>>> refs/remotes/origin/main
             >
               <button 
                 onClick={() => setSelectedStep(null)}
@@ -1095,50 +1538,125 @@ function GoalDetailsLayout({ goal, onClose }: { goal: Goal, onClose: () => void 
                 </div>
               </div>
 
-              <div className="space-y-6 mb-10">
-                <div>
-                  <h3 className="text-xs font-mono uppercase text-text-primary tracking-widest mb-3 flex items-center space-x-2">
-                    <Info className="w-3 h-3 text-accent-blue" />
-                    <span>Operational Briefing</span>
-                  </h3>
-                  <p className="text-text-secondary text-sm leading-relaxed font-light">
-                    {selectedStep.description}
-                  </p>
-                </div>
-
-                <div className="p-4 bg-accent-glow border border-accent-blue/20 rounded-lg">
-                   <h3 className="text-[10px] font-mono uppercase text-accent-blue tracking-widest mb-2 flex items-center space-x-2">
-                     <ShieldAlert className="w-3 h-3" />
-                     <span>Precision Guidance</span>
-                   </h3>
-                   <p className="text-[11px] text-accent-blue/80 font-light leading-relaxed">
-                     Focus purely on this 15-30 minute interval. Do not expand the scope beyond the microscopic task. Precision is authority.
-                   </p>
-                </div>
-
-                <div className="p-4 rounded-lg bg-accent-blue/5 border border-accent-blue/20 flex flex-col sm:flex-row justify-between items-center gap-4">
-                  <div className="flex-1 text-left">
-                    <h3 className="text-[10px] font-mono uppercase text-accent-blue tracking-widest mb-1 flex items-center space-x-1.5 font-semibold">
-                      <Terminal className="w-3.5 h-3.5 animate-pulse" />
-                      <span>Practice Sandbox & Cloud VM</span>
+              <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-8 mb-10">
+                <div className="space-y-6">
+                  <div>
+                    <h3 className="text-xs font-mono uppercase text-text-primary tracking-widest mb-3 flex items-center space-x-2">
+                      <Info className="w-3 h-3 text-accent-blue" />
+                      <span>Operational Briefing</span>
                     </h3>
-                    <p className="text-[11px] text-text-secondary leading-relaxed font-light">
-                      Want to practice this step hands-on? Launch our interactive browser playground terminal or connect to an external server VM.
+                    <p className="text-text-secondary text-sm leading-relaxed font-light">
+                      {selectedStep.description}
                     </p>
                   </div>
-                  <button
-                    onClick={() => {
-                      setTerminalStep(selectedStep);
-                      setSelectedStep(null);
-                    }}
-                    className="btn-primary py-2 px-4 text-[10px] whitespace-nowrap uppercase tracking-wider flex items-center space-x-1.5"
-                    id="launch-practice-sandbox"
-                  >
-                    <span>Launch Sandbox</span>
-                  </button>
+
+                  <div>
+                    <h3 className="text-xs font-mono uppercase text-text-primary tracking-widest mb-3 flex items-center space-x-2">
+                      <CheckCircle2 className="w-3 h-3 text-accent-blue" />
+                      <span>Action Checklist</span>
+                    </h3>
+                    <div className="space-y-2">
+                      {buildStepChecklist(selectedStep).map(item => (
+                        <div key={item} className="flex items-start gap-3 text-xs text-text-secondary leading-relaxed">
+                          <Check className="w-3 h-3 text-accent-blue mt-0.5 shrink-0" />
+                          <span>{item}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <h3 className="text-xs font-mono uppercase text-text-primary tracking-widest mb-3 flex items-center space-x-2">
+                      <Target className="w-3 h-3 text-accent-blue" />
+                      <span>Success Criteria</span>
+                    </h3>
+                    <div className="space-y-2">
+                      {buildSuccessCriteria(selectedStep).map(item => (
+                        <div key={item} className="text-xs text-text-secondary leading-relaxed border-l border-accent-blue/30 pl-3">
+                          {item}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="p-4 bg-accent-glow border border-accent-blue/20 rounded-lg">
+                    <h3 className="text-[10px] font-mono uppercase text-accent-blue tracking-widest mb-2 flex items-center space-x-2">
+                      <ShieldAlert className="w-3 h-3" />
+                      <span>Common Failure Modes</span>
+                    </h3>
+                    <div className="space-y-1 text-[11px] text-accent-blue/80 font-light leading-relaxed">
+                      <p>Expanding the task beyond the allotted interval.</p>
+                      <p>Marking completion without proof or a visible artifact.</p>
+                      <p>Confusing research activity with a concrete next output.</p>
+                    </div>
+                  </div>
+
+                  <div className="p-4 rounded-lg bg-accent-blue/5 border border-accent-blue/20 flex flex-col sm:flex-row justify-between items-center gap-4">
+                    <div className="flex-1 text-left">
+                      <h3 className="text-[10px] font-mono uppercase text-accent-blue tracking-widest mb-1 flex items-center space-x-1.5 font-semibold">
+                        <Terminal className="w-3.5 h-3.5 animate-pulse" />
+                        <span>Practice Sandbox & Cloud VM</span>
+                      </h3>
+                      <p className="text-[11px] text-text-secondary leading-relaxed font-light">
+                        Practice the step in the browser lab, save attempts, and use verification as completion evidence.
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => {
+                        setTerminalStep(selectedStep);
+                        setSelectedStep(null);
+                      }}
+                      className="btn-primary py-2 px-4 text-[10px] whitespace-nowrap uppercase tracking-wider flex items-center space-x-1.5"
+                      id="launch-practice-sandbox"
+                    >
+                      <span>Launch Sandbox</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  <div className="p-4 bg-white/5 border border-border-color rounded-lg">
+                    <span className="card-label mb-3">Completion Evidence</span>
+                    <textarea
+                      value={evidenceNotes}
+                      onChange={(e) => setEvidenceNotes(e.target.value)}
+                      placeholder="What did you produce, decide, run, submit, or learn?"
+                      className="w-full bg-bg-darkest border border-border-color rounded p-3 text-xs text-text-primary focus:outline-none focus:border-accent-blue min-h-28 resize-none"
+                    />
+                    <input
+                      value={evidenceUrl}
+                      onChange={(e) => setEvidenceUrl(e.target.value)}
+                      placeholder="Optional proof link"
+                      className="w-full bg-bg-darkest border border-border-color rounded p-3 text-xs text-text-primary focus:outline-none focus:border-accent-blue mt-3"
+                    />
+                  </div>
+
+                  <div className="p-4 bg-white/5 border border-border-color rounded-lg">
+                    <span className="card-label mb-3">Mastery Signal</span>
+                    <label className="text-[10px] uppercase font-mono text-text-secondary tracking-widest">Confidence: {confidence}/5</label>
+                    <input
+                      type="range"
+                      min={1}
+                      max={5}
+                      value={confidence}
+                      onChange={(e) => setConfidence(Number(e.target.value))}
+                      className="w-full accent-sky-400 mt-2"
+                    />
+                    <select
+                      value={stepFeedback}
+                      onChange={(e) => setStepFeedback(e.target.value as MicroStep['feedback'])}
+                      className="w-full bg-bg-darkest border border-border-color rounded p-3 text-xs text-text-primary focus:outline-none focus:border-accent-blue mt-4"
+                    >
+                      <option value="on-track">On track</option>
+                      <option value="too-hard">Too hard</option>
+                      <option value="too-easy">Too easy</option>
+                      <option value="irrelevant">Irrelevant</option>
+                    </select>
+                  </div>
                 </div>
               </div>
 
+<<<<<<< HEAD
               <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                  <button 
                   onClick={() => {
@@ -1158,6 +1676,31 @@ function GoalDetailsLayout({ goal, onClose }: { goal: Goal, onClose: () => void 
                     <span>Path Level: Phase {currentPhaseIndex}</span>
                     <ExternalLink className="w-3 h-3" />
                  </div>
+=======
+              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                <div className="flex gap-3">
+                  <button 
+                    onClick={() => saveStepEvidence(selectedStep.status !== 'completed')}
+                    className={cn(
+                      "btn-primary px-8 py-3",
+                      selectedStep.status === 'completed' ? "border-text-secondary text-text-secondary hover:bg-white/5" : ""
+                    )}
+                    id="complete-step-btn"
+                  >
+                    {selectedStep.status === 'completed' ? 'Save Evidence' : 'Save Proof & Complete'}
+                  </button>
+                  <button
+                    onClick={() => saveStepEvidence(false)}
+                    className="btn-ghost"
+                  >
+                    Save Draft
+                  </button>
+                </div>
+                <div className="flex items-center space-x-4 text-text-secondary text-[10px] uppercase font-mono tracking-tighter opacity-40">
+                  <span>Path Level: Phase {currentPhaseIndex}</span>
+                  <ExternalLink className="w-3 h-3" />
+                </div>
+>>>>>>> refs/remotes/origin/main
               </div>
             </motion.div>
           </div>

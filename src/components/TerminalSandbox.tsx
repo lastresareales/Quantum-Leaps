@@ -63,7 +63,8 @@ interface TerminalSandboxProps {
   goal: Goal;
   step: MicroStep;
   onClose: () => void;
-  onCompleteStep: () => Promise<void>;
+  onCompleteStep: (proof?: { feedback: string; code: string; stdout: string }) => Promise<void>;
+  onVerificationAttempt?: (passed: boolean, feedback: string) => Promise<void>;
 }
 
 interface FileState {
@@ -73,6 +74,7 @@ interface FileState {
   isLocked?: boolean;
 }
 
+<<<<<<< HEAD
 type CommandKey = 'run' | 'verify' | 'hint' | 'readme' | 'reset' | 'close';
 
 interface CommandItem {
@@ -83,6 +85,9 @@ interface CommandItem {
 }
 
 export default function TerminalSandbox({ goal, step, onClose, onCompleteStep }: TerminalSandboxProps) {
+=======
+export default function TerminalSandbox({ goal, step, onClose, onCompleteStep, onVerificationAttempt }: TerminalSandboxProps) {
+>>>>>>> refs/remotes/origin/main
   const [challenge, setChallenge] = useState<any | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -127,6 +132,7 @@ export default function TerminalSandbox({ goal, step, onClose, onCompleteStep }:
   const [verifying, setVerifying] = useState(false);
   const [verificationFeedback, setVerificationFeedback] = useState<string | null>(null);
   const [passed, setPassed] = useState(false);
+  const [attemptHistory, setAttemptHistory] = useState<{ passed: boolean; feedback: string; timestamp: string }[]>([]);
 
   const consoleEndRef = useRef<HTMLDivElement>(null);
   const textEditorRef = useRef<HTMLTextAreaElement>(null);
@@ -494,6 +500,15 @@ export default function TerminalSandbox({ goal, step, onClose, onCompleteStep }:
       );
 
       setVerificationFeedback(response.feedback);
+      setAttemptHistory(prev => [
+        {
+          passed: response.passed,
+          feedback: response.feedback,
+          timestamp: new Date().toLocaleTimeString()
+        },
+        ...prev
+      ]);
+      await onVerificationAttempt?.(response.passed, response.feedback);
       if (response.passed) {
         setPassed(true);
         addToConsole("\n[CERTIFICATION SYSTEM] Automated checks passed successfully. Quantum credential assigned to profile.", "success");
@@ -1279,7 +1294,11 @@ export default function TerminalSandbox({ goal, step, onClose, onCompleteStep }:
                         {verificationFeedback || "Verification passed. The compiled output satisfies step requirements!"}
                       </p>
                       <button
-                        onClick={onCompleteStep}
+                        onClick={() => onCompleteStep({
+                          feedback: verificationFeedback || "Sandbox verification passed.",
+                          code: currentFile.content,
+                          stdout: consoleLogs.map(l => `[${l.type.toUpperCase()}] ${l.text}`).join('\n')
+                        })}
                         className="py-2 px-5 bg-emerald-500 text-black hover:bg-emerald-400 text-[10px] uppercase tracking-wider font-bold rounded-sm transition-all"
                       >
                         Update Goal Steps & Continue
@@ -1339,6 +1358,23 @@ export default function TerminalSandbox({ goal, step, onClose, onCompleteStep }:
                   <div className="text-gray-400">Compiler template targeting: {challenge.practiceType || 'bash'}</div>
                   <div className="text-gray-400">VM Host Status: connected online</div>
                   <div className="text-emerald-400 font-bold">Standard runtime is hydrated and compiling checks on loop execution requests.</div>
+                  <div className="mt-4 pt-3 border-t border-[#2b2b2b]">
+                    <div className="text-[#858585] mb-2 font-bold select-none">// Verification attempt history</div>
+                    {attemptHistory.length === 0 ? (
+                      <div className="text-gray-500">No verification attempts recorded in this session.</div>
+                    ) : (
+                      <div className="space-y-2">
+                        {attemptHistory.map((attempt, idx) => (
+                          <div key={`${attempt.timestamp}-${idx}`} className="p-2 border border-[#2b2b2b] bg-[#111] rounded">
+                            <div className={attempt.passed ? "text-emerald-400 font-bold" : "text-red-400 font-bold"}>
+                              {attempt.timestamp} - {attempt.passed ? 'PASSED' : 'NEEDS REVISION'}
+                            </div>
+                            <div className="text-gray-400 mt-1 whitespace-pre-wrap">{attempt.feedback}</div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
 
