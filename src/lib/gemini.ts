@@ -1,7 +1,17 @@
 import { GoogleGenAI, Type } from "@google/genai";
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
+const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY?.trim() || "";
 const model = "gemini-2.5-flash";
+
+function getGeminiClient() {
+  if (!GEMINI_API_KEY) {
+    throw new Error(
+      "Gemini is not configured. Set VITE_GEMINI_API_KEY at build time. This app is client-side, so use a restricted browser key or move Gemini calls behind a server."
+    );
+  }
+
+  return new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+}
 
 function parseModelJson<T>(rawText: string | undefined, fallback: T): T {
   if (!rawText) return fallback;
@@ -46,7 +56,7 @@ export async function interrogateGoal(goalTitle: string, history: { role: string
     ...history.map(h => ({ role: h.role === 'assistant' ? 'model' : h.role, parts: [{ text: h.content }] }))
   ];
 
-  const response = await ai.models.generateContent({
+  const response = await getGeminiClient().models.generateContent({
     model,
     contents: contents as any,
     config: {
@@ -64,7 +74,7 @@ export async function generateNextPhaseSteps(
   existingStepsCount: number, 
   nextPhaseIndex: number
 ) {
-  const response = await ai.models.generateContent({
+  const response = await getGeminiClient().models.generateContent({
     model,
     contents: `Based on this goal: "${goalTitle}" and the context of previous coaching communication: "${context}", generate Phase ${nextPhaseIndex} of 20 of this long-term journey (where each phase represents 5% progress).
     
@@ -109,7 +119,7 @@ export async function generateNextPhaseSteps(
 
 
 export async function generateMicroSteps(goalTitle: string, context: string) {
-  const response = await ai.models.generateContent({
+  const response = await getGeminiClient().models.generateContent({
     model,
     contents: `Based on this goal: "${goalTitle}" and this context: "${context}", generate a series of EXACTLY 10 detailed, microscopic, sequential steps representing Phase 1 of 20 (the first 5% of the total journey).
     
@@ -150,7 +160,7 @@ export async function generateMicroSteps(goalTitle: string, context: string) {
 }
 
 export async function generatePhaseQuiz(goalTitle: string, phaseIndex: number, stepsText: string) {
-  const response = await ai.models.generateContent({
+  const response = await getGeminiClient().models.generateContent({
     model,
     contents: `You are the Quantum Coach Exam Generator. Based on the master goal: "${goalTitle}", and the following 10 steps recently completed by the user in Phase ${phaseIndex} of 20:
     
@@ -206,7 +216,7 @@ export async function generatePhaseQuiz(goalTitle: string, phaseIndex: number, s
 }
 
 export async function generateTerminalChallenge(goalTitle: string, stepTitle: string, stepDescription: string) {
-  const response = await ai.models.generateContent({
+  const response = await getGeminiClient().models.generateContent({
     model: "gemini-3.5-flash",
     contents: `Analyze this master goal: "${goalTitle}", step title: "${stepTitle}", and step instructions: "${stepDescription}".
     
@@ -270,7 +280,7 @@ export async function verifyCodeSolution(
   code: string, 
   stdout: string
 ) {
-  const response = await ai.models.generateContent({
+  const response = await getGeminiClient().models.generateContent({
     model: "gemini-3.1-flash-lite",
     contents: `Verify if the user's coded solution or input satisfies the objective.
     Master Goal: "${goalTitle}"

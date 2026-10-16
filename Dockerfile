@@ -3,14 +3,10 @@
 FROM node:22-alpine AS build
 WORKDIR /app
 
-COPY package*.json ./
+COPY package.json package-lock.json ./
 RUN npm ci
 
 COPY . .
-
-# Vite embeds GEMINI_API_KEY into the browser bundle during the build.
-ARG GEMINI_API_KEY
-ENV GEMINI_API_KEY=${GEMINI_API_KEY}
 RUN npm run build
 
 FROM nginx:1.27-alpine

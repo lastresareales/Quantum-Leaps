@@ -1,10 +1,7 @@
-# fly.toml app configuration file generated for quantum-leaps-qmxwaa on 2026-10-16T19:08:46Z
-#
-# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
-#
-
-app = 'quantum-leaps-qmxwaa'
-primary_region = 'lax'
+# fly.toml
+# App name is intentionally omitted to avoid mismatches.
+# Deploy with: fly deploy -a <your-fly-app-name>
+primary_region = 'iad'
 
 [build]
   dockerfile = 'Dockerfile'
