@@ -60,10 +60,10 @@ Use it when a step is better learned by doing than by reading.
   cp .env.example .env.local
   ```
 
-3. Add your Gemini API key.
+3. Add your Gemini API key (optional).
 
   ```env
-  GEMINI_API_KEY=your_key_here
+  VITE_GEMINI_API_KEY=your_restricted_browser_key_here
   ```
 
 4. Make sure Firebase is configured.
@@ -76,13 +76,14 @@ Use it when a step is better learned by doing than by reading.
   npm run dev
   ```
 
-6. Open the app in your browser at http://localhost:3000.
+6. Open the app in your browser at http://localhost:5000.
 
 ## Environment
 
 The repository includes [`.env.example`](.env.example) as the source of truth for runtime variables.
 
-- `GEMINI_API_KEY` is required for Gemini calls in [src/lib/gemini.ts](src/lib/gemini.ts)
+- `VITE_GEMINI_API_KEY` enables Gemini calls in [src/lib/gemini.ts](src/lib/gemini.ts)
+- This app is fully client-side, so `VITE_GEMINI_API_KEY` is exposed in browser code. Use only a restricted browser key (HTTP referrer + API restrictions), or move Gemini behind a server API.
 - Firebase project settings come from [firebase-applet-config.json](firebase-applet-config.json)
 - Firestore uses the default database configured in Firebase
 
@@ -90,11 +91,60 @@ The repository includes [`.env.example`](.env.example) as the source of truth fo
 
 | Script | Purpose |
 | --- | --- |
-| `npm run dev` | Start local development on port 3000 |
+| `npm run dev` | Start local development on port 5000 |
 | `npm run build` | Build production assets into `dist` |
 | `npm run preview` | Preview the production build locally |
 | `npm run clean` | Remove `dist` |
 | `npm run lint` | Run TypeScript checks with no emit |
+
+## Fly.io Deployment (Production)
+
+This repository deploys as a static Vite build served by Nginx on port `8080` with SPA fallback and `/healthz`.
+No Fly runtime secrets are required for static hosting.
+
+1. Create/select your Fly app (first time only):
+
+   ```bash
+   fly launch --no-deploy -a <your-fly-app-name> --region iad
+   ```
+
+2. (Optional) Build with Gemini enabled:
+
+   ```bash
+   fly deploy -a <your-fly-app-name> --build-arg VITE_GEMINI_API_KEY=your_restricted_browser_key
+   ```
+
+   If you skip this build arg, deployment still succeeds; Gemini-powered features will return a configuration error until a browser-safe key is provided.
+
+3. Deploy (without Gemini key):
+
+   ```bash
+   fly deploy -a <your-fly-app-name>
+   ```
+
+4. Verify health/routing/logs:
+
+   ```bash
+   fly status -a <your-fly-app-name>
+   fly checks list -a <your-fly-app-name>
+   fly logs -a <your-fly-app-name>
+   ```
+
+5. Diagnose stale machine/IP provisioning issues:
+
+   ```bash
+   fly machines list -a <your-fly-app-name>
+   fly ips list -a <your-fly-app-name>
+   fly ips allocate-v6 -a <your-fly-app-name>
+   fly ips allocate-v4 -a <your-fly-app-name>
+   ```
+
+   If you still have stale/failed machines from earlier misconfiguration, destroy them and redeploy:
+
+   ```bash
+   fly machine destroy <machine-id> -a <your-fly-app-name>
+   fly deploy -a <your-fly-app-name>
+   ```
 
 ## System Flow
 
@@ -130,7 +180,7 @@ flowchart LR
 
 ## Development Notes
 
-- Confirm `GEMINI_API_KEY` is set before starting the app
+- Confirm `VITE_GEMINI_API_KEY` is set before starting the app if you want Gemini features enabled
 - Verify Firebase Auth and Firestore are enabled for the target project
 - Use `npm run lint` before shipping changes
 - Use `npm run build` to confirm production bundling succeeds
